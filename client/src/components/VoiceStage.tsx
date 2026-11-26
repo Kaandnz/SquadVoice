@@ -2,6 +2,7 @@ import {
   PointerEvent as ReactPointerEvent,
   TouchEvent as ReactTouchEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -127,6 +128,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     reconnectVoicePeers,
     playRoomSoundboard,
     setFocusedStreamUser,
+    setScreenAudioConfig,
     setPeerVolume,
     unlockAudio,
     adminForceMute,
@@ -197,6 +199,11 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const activeStream = activeStreamEntry?.stream ?? null;
   const activeStreamId = activeStreamEntry?.id ?? null;
   const isSelfStream = activeStreamId === 'self';
+  const videoOnlyStream = useMemo(() => {
+    if (!activeStream) return null;
+    if (activeStream.getAudioTracks().length === 0) return activeStream;
+    return new MediaStream(activeStream.getVideoTracks());
+  }, [activeStream]);
   const shouldRenderVideo = Boolean(activeStream && (!isSelfStream || showSelfPreview));
   const streamKey = activeStream ? `${activeStreamId}:${activeStream.id}` : null;
   const streamHidden = Boolean(streamKey && hiddenStreamKey === streamKey);
@@ -270,22 +277,21 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (shouldRenderVideo && activeStream) {
-      if (el.srcObject !== activeStream) {
-        el.srcObject = activeStream;
+    el.muted = true;
+    if (shouldRenderVideo && videoOnlyStream) {
+      if (el.srcObject !== videoOnlyStream) {
+        el.srcObject = videoOnlyStream;
         el.play().catch(() => {});
       }
     } else if (el.srcObject) {
       el.srcObject = null;
     }
-  }, [activeStream, shouldRenderVideo]);
+  }, [videoOnlyStream, shouldRenderVideo]);
 
+  const remoteActiveStreamId = activeStreamId && !isSelfStream ? activeStreamId : null;
   useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    el.muted = isSelfStream || streamMuted;
-    el.volume = isSelfStream || streamMuted ? 0 : streamVolume;
-  }, [streamVolume, streamMuted, isSelfStream, shouldRenderVideo]);
+    setScreenAudioConfig(remoteActiveStreamId, streamVolume, streamMuted);
+  }, [remoteActiveStreamId, streamVolume, streamMuted, setScreenAudioConfig]);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -808,6 +814,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
                 ref={videoRef}
                 autoPlay
                 playsInline
+                muted
                 onLoadedMetadata={(e) => {
                   e.currentTarget.play().catch(() => {});
                 }}

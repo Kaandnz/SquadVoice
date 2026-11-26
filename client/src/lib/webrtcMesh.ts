@@ -216,6 +216,7 @@ export class WebRtcMeshManager {
   }
 
   clearRemoteScreenStream(userId: string) {
+    this.audioEngine.removeScreenAudio(userId);
     const entry = this.peers.get(userId);
     if (entry && entry.screenStream) {
       entry.screenStream = null;
@@ -554,25 +555,20 @@ export class WebRtcMeshManager {
         track.kind === 'audio' &&
         Boolean(expectedScreenId && stream.id === expectedScreenId);
 
-      if (track.kind === 'video' || isScreenAudio) {
-        const existingTracks = (entry.screenStream?.getTracks() ?? []).filter(
-          (t) => t.id !== track.id && t.readyState === 'live',
-        );
-        entry.screenStream = new MediaStream([...existingTracks, track]);
+      if (isScreenAudio) {
+        this.audioEngine.setScreenAudioStream(remoteUserId, new MediaStream([track]));
+        track.onended = () => {
+          this.audioEngine.removeScreenAudio(remoteUserId, track.id);
+        };
+      } else if (track.kind === 'video') {
+        entry.screenStream = new MediaStream([track]);
         this.callbacks.onRemoteScreenStream(remoteUserId, entry.screenStream);
 
         track.onended = () => {
-          if (!entry.screenStream) return;
-          const remaining = entry.screenStream
-            .getTracks()
-            .filter((t) => t.id !== track.id && t.readyState === 'live');
-          if (remaining.length === 0) {
-            entry.screenStream = null;
-            this.callbacks.onRemoteScreenStream(remoteUserId, null);
-          } else {
-            entry.screenStream = new MediaStream(remaining);
-            this.callbacks.onRemoteScreenStream(remoteUserId, entry.screenStream);
-          }
+          if (!entry.screenStream?.getTracks().some((t) => t.id === track.id)) return;
+          entry.screenStream = null;
+          this.callbacks.onRemoteScreenStream(remoteUserId, null);
+          this.audioEngine.removeScreenAudio(remoteUserId);
         };
       } else if (track.kind === 'audio') {
         entry.hasAudioTrack = true;

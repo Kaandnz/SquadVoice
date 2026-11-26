@@ -194,6 +194,7 @@ export interface AppState {
   stopScreenShare: () => void;
   playRoomSoundboard: (sound: SoundboardId) => Promise<void>;
   setFocusedStreamUser: (userId: string | null) => void;
+  setScreenAudioConfig: (userId: string | null, volume: number, muted: boolean) => void;
   setPeerVolume: (userId: string, volume: number) => void;
   updateAudioSettings: (patch: Partial<AudioSettings>) => Promise<void>;
   unlockAudio: () => Promise<void>;
@@ -1835,6 +1836,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setFocusedStreamUser: (userId) => set({ focusedStreamUserId: userId }),
+
+  setScreenAudioConfig: (userId, volume, muted) => {
+    audioEngine?.setActiveScreenAudio(userId, volume, muted);
+  },
 
   setPeerVolume: (userId, volume) => {
     const clamped = Math.max(0, Math.min(2, volume));

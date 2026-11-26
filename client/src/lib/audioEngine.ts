@@ -11,6 +11,11 @@ import {
   trackNoiseFloor,
   type GateState,
 } from './audioGate';
+import {
+  enterCallAudioSession,
+  leaveCallAudioSession,
+  prepareAudioSessionForMic,
+} from './audioSession';
 
 /** How often the mic level / noise gate is evaluated (ms). */
 const GATE_TICK_MS = 20;
@@ -32,6 +37,12 @@ interface RemotePeerAudio {
   volume: number; // 0.0 to 2.0
 }
 
+interface RemoteScreenAudio {
+  stream: MediaStream;
+  trackId: string;
+  audioEl: HTMLAudioElement;
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private hostContainer: HTMLDivElement | null = null;
@@ -47,6 +58,10 @@ export class AudioEngine {
 
   private remotePeers = new Map<string, RemotePeerAudio>();
   private peerVolumes = new Map<string, number>();
+  private screenAudioPeers = new Map<string, RemoteScreenAudio>();
+  private activeScreenUserId: string | null = null;
+  private screenVolume = 0.8;
+  private screenMuted = false;
 
   private onSpeakingChange: (speaking: boolean) => void;
   private onMicLevel: (level: number) => void;
@@ -135,6 +150,13 @@ export class AudioEngine {
         break;
       }
     }
+    if (!anyBlocked && this.activeScreenUserId) {
+      const screen = this.screenAudioPeers.get(this.activeScreenUserId);
+      const effective = !this.deafened && !this.screenMuted ? this.screenVolume : 0;
+      if (screen && effective > 0 && screen.audioEl.paused) {
+        anyBlocked = true;
+      }
+    }
     this.onAutoplayBlocked(anyBlocked);
   }
 
@@ -149,11 +171,30 @@ export class AudioEngine {
       // Ignore context errors on mobile
     }
 
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+
     for (const peer of this.remotePeers.values()) {
       try {
         await peer.audioEl.play();
       } catch {
         allPlayed = false;
+      }
+    }
+
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      const isActiveUnmuted =
+        uid === this.activeScreenUserId &&
+        !this.deafened &&
+        !this.screenMuted &&
+        this.screenVolume > 0;
+      try {
+        await entry.audioEl.play();
+      } catch {
+        if (isActiveUnmuted) {
+          allPlayed = false;
+        }
       }
     }
 
@@ -170,6 +211,12 @@ export class AudioEngine {
     }
     for (const peer of this.remotePeers.values()) {
       const el = peer.audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof el.setSinkId === 'function') {
+        await el.setSinkId(sinkId).catch(() => {});
+      }
+    }
+    for (const entry of this.screenAudioPeers.values()) {
+      const el = entry.audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
       if (typeof el.setSinkId === 'function') {
         await el.setSinkId(sinkId).catch(() => {});
       }
@@ -335,6 +382,7 @@ export class AudioEngine {
     }
     if (test.ownStream) {
       for (const t of test.ownStream.getTracks()) t.stop();
+      if (!this.micStream) leaveCallAudioSession();
       if (!this.vadTimer) this.onMicLevel(0);
     }
   }
@@ -364,6 +412,7 @@ export class AudioEngine {
     }
     attempts.push(baseProcessing, true);
 
+    prepareAudioSessionForMic();
     let stream: MediaStream | null = null;
     let lastError: unknown = null;
     for (const audio of attempts) {
@@ -377,6 +426,7 @@ export class AudioEngine {
     if (!stream) {
       throw lastError instanceof Error ? lastError : new Error('Mikrofon açılamadı');
     }
+    enterCallAudioSession();
     return stream;
   }
 
@@ -470,6 +520,10 @@ export class AudioEngine {
     for (const peer of this.remotePeers.values()) {
       this.applyPeerRouting(peer);
     }
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      this.applyScreenAudioRouting(uid, entry);
+    }
+    this.checkAutoplayState();
   }
 
   setPeerVolume(userId: string, volume: number) {
@@ -486,18 +540,7 @@ export class AudioEngine {
     return this.peerVolumes.get(userId) ?? 1.0;
   }
 
-  setPeerStream(userId: string, stream: MediaStream) {
-    const existing = this.remotePeers.get(userId);
-    if (existing && existing.stream.id === stream.id) {
-      existing.audioEl.play().catch(() => {
-        this.onAutoplayBlocked(true);
-      });
-      return;
-    }
-
-    this.removePeer(userId);
-
-    const volume = this.peerVolumes.get(userId) ?? 1.0;
+  private createHostedAudioElement(stream: MediaStream): HTMLAudioElement {
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
     audioEl.setAttribute('autoplay', '');
@@ -517,6 +560,26 @@ export class AudioEngine {
         el.setSinkId(this.outputDeviceId).catch(() => {});
       }
     }
+
+    return audioEl;
+  }
+
+  setPeerStream(userId: string, stream: MediaStream) {
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+    const existing = this.remotePeers.get(userId);
+    if (existing && existing.stream.id === stream.id) {
+      existing.audioEl.play().catch(() => {
+        this.onAutoplayBlocked(true);
+      });
+      return;
+    }
+
+    this.removePeer(userId);
+
+    const volume = this.peerVolumes.get(userId) ?? 1.0;
+    const audioEl = this.createHostedAudioElement(stream);
 
     const entry: RemotePeerAudio = {
       stream,
@@ -607,7 +670,109 @@ export class AudioEngine {
     peer.limiterNode = null;
   }
 
+  setScreenAudioStream(userId: string, stream: MediaStream) {
+    const trackId = stream.getAudioTracks()[0]?.id ?? stream.id;
+    const existing = this.screenAudioPeers.get(userId);
+    if (existing && existing.trackId === trackId) {
+      this.applyScreenAudioRouting(userId, existing);
+      if (this.micStream) {
+        enterCallAudioSession();
+      }
+      existing.audioEl
+        .play()
+        .then(() => {
+          this.checkAutoplayState();
+        })
+        .catch(() => {
+          this.checkAutoplayState();
+        });
+      return;
+    }
+
+    this.removeScreenAudio(userId);
+
+    const audioEl = this.createHostedAudioElement(stream);
+    const entry: RemoteScreenAudio = {
+      stream,
+      trackId,
+      audioEl,
+    };
+
+    audioEl.onplaying = () => {
+      this.checkAutoplayState();
+    };
+    audioEl.onpause = () => {
+      this.checkAutoplayState();
+    };
+
+    this.screenAudioPeers.set(userId, entry);
+    this.applyScreenAudioRouting(userId, entry);
+
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+
+    audioEl
+      .play()
+      .then(() => {
+        this.checkAutoplayState();
+      })
+      .catch(() => {
+        this.checkAutoplayState();
+      });
+  }
+
+  removeScreenAudio(userId: string, onlyTrackId?: string) {
+    const existing = this.screenAudioPeers.get(userId);
+    if (!existing) return;
+    if (onlyTrackId && existing.trackId !== onlyTrackId) return;
+    existing.audioEl.onplaying = null;
+    existing.audioEl.onpause = null;
+    existing.audioEl.pause();
+    existing.audioEl.srcObject = null;
+    existing.audioEl.remove();
+    this.screenAudioPeers.delete(userId);
+    this.checkAutoplayState();
+  }
+
+  setActiveScreenAudio(userId: string | null, volume: number, muted: boolean) {
+    this.activeScreenUserId = userId;
+    this.screenVolume = Math.max(0, Math.min(1, volume));
+    this.screenMuted = muted;
+
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      this.applyScreenAudioRouting(uid, entry);
+      if (
+        uid === userId &&
+        !this.deafened &&
+        !this.screenMuted &&
+        this.screenVolume > 0 &&
+        entry.audioEl.paused
+      ) {
+        entry.audioEl
+          .play()
+          .then(() => {
+            this.checkAutoplayState();
+          })
+          .catch(() => {
+            this.checkAutoplayState();
+          });
+      }
+    }
+    this.checkAutoplayState();
+  }
+
+  private applyScreenAudioRouting(userId: string, entry: RemoteScreenAudio) {
+    const effective =
+      this.activeScreenUserId === userId && !this.deafened && !this.screenMuted
+        ? this.screenVolume
+        : 0;
+    entry.audioEl.volume = Math.max(0, Math.min(1, effective));
+    entry.audioEl.muted = effective === 0;
+  }
+
   removePeer(userId: string) {
+    this.removeScreenAudio(userId);
     const existing = this.remotePeers.get(userId);
     if (!existing) return;
     existing.audioEl.onplaying = null;
@@ -643,6 +808,7 @@ export class AudioEngine {
         t.stop();
       }
       this.micStream = null;
+      leaveCallAudioSession();
     }
     if (this.currentlySpeaking) {
       this.currentlySpeaking = false;
@@ -656,6 +822,10 @@ export class AudioEngine {
     for (const userId of Array.from(this.remotePeers.keys())) {
       this.removePeer(userId);
     }
+    for (const userId of Array.from(this.screenAudioPeers.keys())) {
+      this.removeScreenAudio(userId);
+    }
+    this.activeScreenUserId = null;
     this.onAutoplayBlocked(false);
   }
 }
