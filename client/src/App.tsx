@@ -3,6 +3,7 @@ import { Menu, X } from 'lucide-react';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { AuthScreen } from './components/AuthScreen';
 import { ChatPanel } from './components/ChatPanel';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { MemberList } from './components/MemberList';
 import { OtherDeviceCallBanner } from './components/OtherDeviceCallBanner';
 import { ProfileModal } from './components/ProfileModal';
@@ -63,13 +64,15 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar
-        mobileOpen={mobileSidebarOpen}
-        onCloseMobile={() => setMobileSidebarOpen(false)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenAdmin={() => setAdminOpen(true)}
-        onOpenProfile={() => setProfileOpen(true)}
-      />
+      <ErrorBoundary area="Kanal listesi">
+        <Sidebar
+          mobileOpen={mobileSidebarOpen}
+          onCloseMobile={() => setMobileSidebarOpen(false)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenAdmin={() => setAdminOpen(true)}
+          onOpenProfile={() => setProfileOpen(true)}
+        />
+      </ErrorBoundary>
 
       <main className="main-stage">
         <div className="mobile-topbar">
@@ -104,23 +107,39 @@ export function App() {
           </div>
         )}
 
-        <OtherDeviceCallBanner />
-        <VoiceStage onOpenShareModal={() => setShareModalOpen(true)} />
+        <ErrorBoundary area="Cihaz bildirimi">
+          <OtherDeviceCallBanner />
+        </ErrorBoundary>
+        <ErrorBoundary area="Ses odası">
+          <VoiceStage onOpenShareModal={() => setShareModalOpen(true)} />
+        </ErrorBoundary>
 
         <div className="chat-and-members">
-          <ChatPanel />
-          <MemberList />
+          <ErrorBoundary area="Sohbet">
+            <ChatPanel />
+          </ErrorBoundary>
+          <ErrorBoundary area="Üye listesi">
+            <MemberList />
+          </ErrorBoundary>
         </div>
       </main>
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <AdminPanelModal open={adminOpen} onClose={() => setAdminOpen(false)} />
-      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
-      <ScreenShareModal
-        open={shareModalOpen}
-        onClose={() => setShareModalOpen(false)}
-        onStart={startScreenShare}
-      />
+      <ErrorBoundary area="Ayarlar">
+        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      </ErrorBoundary>
+      <ErrorBoundary area="Admin paneli">
+        <AdminPanelModal open={adminOpen} onClose={() => setAdminOpen(false)} />
+      </ErrorBoundary>
+      <ErrorBoundary area="Profil">
+        <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+      </ErrorBoundary>
+      <ErrorBoundary area="Ekran paylaşımı">
+        <ScreenShareModal
+          open={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
+          onStart={startScreenShare}
+        />
+      </ErrorBoundary>
     </div>
   );
 }
