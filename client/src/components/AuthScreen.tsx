@@ -1,19 +1,30 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { KeyRound, Server, ShieldCheck, Sparkles } from 'lucide-react';
+import { readInviteCode, stripInviteParam } from '../lib/invite';
 import { isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 
 export function AuthScreen() {
   const { firebaseMode, serverUrl, authError, authLoading, login, register, resetPassword } =
     useAppStore();
-  const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
+  // Opened from an invite link (?davet=CODE): go straight to sign-up with the code filled in
+  const [linkedInvite] = useState(() => readInviteCode(window.location.search));
+  const [mode, setMode] = useState<'login' | 'register' | 'reset'>(
+    linkedInvite ? 'register' : 'login',
+  );
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  // Never prefill the real code: it is the only thing gating sign-ups, and anything
-  // baked into the bundle is readable by whoever opens the site.
-  const [inviteCode, setInviteCode] = useState('');
+  // Never bake the real code into the bundle (anyone opening the site could read it);
+  // it only comes from a link someone chose to share.
+  const [inviteCode, setInviteCode] = useState(linkedInvite ?? '');
+
+  useEffect(() => {
+    if (linkedInvite) {
+      window.history.replaceState(window.history.state, '', stripInviteParam(window.location.href));
+    }
+  }, [linkedInvite]);
   const [customUrl, setCustomUrl] = useState(serverUrl);
   const [showServerField, setShowServerField] = useState(!firebaseMode && isTauriRuntime());
   const [localError, setLocalError] = useState<string | null>(null);
@@ -99,6 +110,11 @@ export function AuthScreen() {
         )}
 
         <form onSubmit={handleSubmit} className="auth-form">
+          {mode === 'register' && linkedInvite && inviteCode === linkedInvite && (
+            <div className="form-success" role="status">
+              Davet linkiyle geldin — davet kodu hazır, sadece hesabını oluştur.
+            </div>
+          )}
           {mode !== 'reset' && (
             <label>
               <span>{mode === 'login' ? 'E-posta veya Kullanıcı Adı' : 'Kullanıcı Adı'}</span>

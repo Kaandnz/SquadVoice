@@ -780,6 +780,271 @@ button {
   font-size: 0.86rem;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ping-badge.as-button {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.ping-badge.as-button:hover,
+.ping-badge.as-button[aria-expanded='true'] {
+  background: var(--bg-hover);
+}
+
+/* Connection details: status line + one-minute trend per metric */
+.conn-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+}
+
+.conn-details-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+.conn-details-head.good svg {
+  color: var(--green);
+}
+
+.conn-details-head.fair svg {
+  color: var(--yellow);
+}
+
+.conn-details-head.poor svg {
+  color: var(--danger);
+}
+
+.conn-details-head.unknown svg {
+  color: var(--text-muted);
+}
+
+.conn-details-head .spin {
+  animation: spin 1s linear infinite;
+}
+
+.conn-details-rating {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.conn-details-meta {
+  color: var(--text-muted);
+}
+
+.conn-tile {
+  display: grid;
+  /* Fixed text column so a long hover label can't push the trend line out of the card */
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.conn-tile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.conn-tile-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.conn-tile-ago {
+  color: var(--text-muted);
+}
+
+.conn-tile-value {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.conn-tile-unit {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.conn-spark {
+  position: relative;
+  height: 28px;
+  min-width: 0;
+  /* Room for the 8px end-point marker, which is centred on the last sample */
+  margin-right: 5px;
+  cursor: crosshair;
+  touch-action: pan-y;
+}
+
+.conn-spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.conn-spark-base {
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.conn-spark-line {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.conn-spark-cross {
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.conn-spark-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-1);
+  pointer-events: none;
+}
+
+.load-older-row {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px;
+}
+
+.invite-link-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.invite-link-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.invite-link-row .muted-text {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.error-fallback {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(242, 63, 66, 0.1);
+  border: 1px solid rgba(242, 63, 66, 0.35);
+  font-size: 0.86rem;
+  min-width: 0;
+}
+
+.error-fallback.full {
+  margin: 12vh auto;
+  max-width: 460px;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.error-fallback-icon {
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+.error-fallback-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.error-fallback-detail {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.error-fallback-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.error-fallback-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mic-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.mic-test-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toast-info {
+  margin: 8px 14px 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(88, 101, 242, 0.16);
+  border: 1px solid rgba(88, 101, 242, 0.45);
+  color: #c9cdfb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.86rem;
+}
+
 /* Voice Stage */
 .voice-stage {
   background: var(--bg-1);
@@ -857,6 +1122,23 @@ button {
 .action-pill:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.other-device-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 12px 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(35, 165, 90, 0.12);
+  border: 1px solid rgba(35, 165, 90, 0.35);
+  font-size: 0.85rem;
+}
+
+.other-device-banner > span {
+  flex: 1 1 200px;
 }
 
 .audio-unlock-banner {
@@ -1654,6 +1936,9 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* ChatPanel restores the reading position itself when older history is prepended;
+     the browser's own anchoring would apply the shift a second time. */
+  overflow-anchor: none;
 }
 
 .chat-empty {

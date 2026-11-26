@@ -29,6 +29,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { canUseDisplayMedia } from '../lib/platform';
+import { ConnectionDetails } from './ConnectionDetails';
 import { SOUNDBOARD_ITEMS } from '../lib/sounds';
 import {
   clampPan,
@@ -86,12 +87,14 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     needsAudioUnlock,
     peerVolumes,
     peerStats,
+    peerQualityHistory,
     localScreenStream,
     remoteScreenStreams,
     localCameraStream,
     remoteCameraStreams,
     focusedStreamUserId,
     turnEnabled,
+    wsStatus,
     lastSoundboard,
     selectTextChannel,
     toggleMute,
@@ -119,6 +122,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const [zoom, setZoom] = useState(MIN_ZOOM);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [expandedStatsUserId, setExpandedStatsUserId] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -602,6 +606,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
         )}
       </div>
 
+      {firebaseMode && wsStatus !== 'connected' && (
+        <div className="audio-unlock-banner" role="status">
+          <span>
+            İnternet bağlantısı koptu, yeniden bağlanılıyor… Odadan çıkarılmayacaksın; bağlantı
+            gelince ses kendiliğinden devam eder.
+          </span>
+        </div>
+      )}
+
       {needsAudioUnlock && (
         <div className="audio-unlock-banner">
           <span>Telefon/tarayıcı ses oynatmayı bekliyor — duymak için dokun!</span>
@@ -868,7 +881,24 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
                       <MicOff size={13} className="muted-icon" />
                     )}
                     {member.deafened && <HeadphoneOff size={13} className="muted-icon" />}
-                    {!isSelf && <span className={`ping-badge ${pingClass}`}>{statusText}</span>}
+                    {!isSelf &&
+                      (stats ? (
+                        <button
+                          type="button"
+                          className={`ping-badge as-button ${pingClass}`}
+                          aria-expanded={expandedStatsUserId === member.user_id}
+                          title="Bağlantı ayrıntıları (ping, paket kaybı, jitter)"
+                          onClick={() =>
+                            setExpandedStatsUserId((cur) =>
+                              cur === member.user_id ? null : member.user_id,
+                            )
+                          }
+                        >
+                          {statusText}
+                        </button>
+                      ) : (
+                        <span className={`ping-badge ${pingClass}`}>{statusText}</span>
+                      ))}
                   </div>
                 </div>
               </div>
@@ -886,6 +916,13 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
                   />
                   <span>{Math.round(vol * 100)}%</span>
                 </div>
+              )}
+
+              {!isSelf && stats && expandedStatsUserId === member.user_id && (
+                <ConnectionDetails
+                  stats={stats}
+                  history={peerQualityHistory[member.user_id] ?? []}
+                />
               )}
 
               {firebaseMode && user?.role === 'admin' && !isSelf && (

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Copy, KeyRound, Settings, X } from 'lucide-react';
+import { Copy, KeyRound, Mic, Settings, Square, X } from 'lucide-react';
+import { currentInviteLink } from '../lib/invite';
 import { useAppStore } from '../store/useAppStore';
 import { useMicLevelStore } from '../store/useMicLevelStore';
 
@@ -16,8 +17,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     turnEnabled,
     iceServers,
     serverUrl,
+    micTestActive,
+    activeVoiceChannelId,
+    muted,
+    forceMuted,
+    deafened,
     updateAudioSettings,
     changePassword,
+    startMicTest,
+    stopMicTest,
   } = useAppStore();
   const micLevel = useMicLevelStore((s) => s.micLevel);
 
@@ -33,15 +41,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [pwdBusy, setPwdBusy] = useState(false);
 
   useEffect(() => {
-    if (!open || !navigator.mediaDevices?.enumerateDevices) return;
-    navigator.mediaDevices
-      .enumerateDevices()
-      .then((devices) => {
-        setInputs(devices.filter((d) => d.kind === 'audioinput'));
-        setOutputs(devices.filter((d) => d.kind === 'audiooutput'));
-      })
-      .catch(() => {});
-  }, [open]);
+    const media = navigator.mediaDevices;
+    if (!open || !media?.enumerateDevices) return;
+    const refresh = () => {
+      media
+        .enumerateDevices()
+        .then((devices) => {
+          setInputs(devices.filter((d) => d.kind === 'audioinput'));
+          setOutputs(devices.filter((d) => d.kind === 'audiooutput'));
+        })
+        .catch(() => {});
+    };
+    refresh();
+    // Keep the lists current when a headset is plugged in or removed while open
+    media.addEventListener?.('devicechange', refresh);
+    return () => media.removeEventListener?.('devicechange', refresh);
+  }, [open, micTestActive]);
+
+  // Never leave the loopback running once the settings are closed or unmounted
+  useEffect(() => {
+    if (!open) stopMicTest();
+    return () => stopMicTest();
+  }, [open, stopMicTest]);
 
   useEffect(() => {
     if (!capturingKey) return;
@@ -150,6 +171,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <span className="muted-text" style={{ fontSize: '0.75rem' }}>
               Sadece yeşil konuşma göstergesini ayarlar; sesini kesmez.
             </span>
+            <div className="mic-test-row">
+              <button
+                type="button"
+                className={micTestActive ? 'action-pill danger' : 'secondary-btn small'}
+                onClick={() => (micTestActive ? stopMicTest() : startMicTest())}
+              >
+                {micTestActive ? <Square size={13} /> : <Mic size={14} />}
+                {micTestActive ? 'Testi Durdur' : 'Mikrofonu Test Et'}
+              </button>
+              <span className="muted-text" style={{ fontSize: '0.75rem' }}>
+                {micTestActive && activeVoiceChannelId && (muted || forceMuted || deafened)
+                  ? 'Mikrofonun şu an kapalı (susturulmuş/sağır) — açınca sesini duyacaksın.'
+                  : micTestActive
+                    ? 'Kendi sesini duyuyorsun' +
+                      (activeVoiceChannelId ? ' — arkadaşların da tam olarak bunu duyuyor.' : '.')
+                    : 'Kulaklık tak: sesin sana geri çalınır, cızırtı/yankı varsa hemen duyarsın.'}
+              </span>
+            </div>
           </div>
 
           <div className="field-label">Opus Ses Kalitesi</div>
@@ -350,12 +389,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   type="button"
                   className="secondary-btn small"
                   onClick={() => {
-                    navigator.clipboard?.writeText(adminInviteCode).catch(() => {});
+                    // Share a one-click link when there's a public address, else the code
+                    const text = currentInviteLink(adminInviteCode) ?? adminInviteCode;
+                    navigator.clipboard?.writeText(text).catch(() => {});
                     setCopiedInvite(true);
                     setTimeout(() => setCopiedInvite(false), 1500);
                   }}
+                  title="Tek tıkla katılma linkini kopyalar"
                 >
-                  <Copy size={13} /> {copiedInvite ? 'Kopyalandı' : 'Kopyala'}
+                  <Copy size={13} /> {copiedInvite ? 'Kopyalandı' : 'Linki Kopyala'}
                 </button>
               </div>
             )}

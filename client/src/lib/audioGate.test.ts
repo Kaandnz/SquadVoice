@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { computeRmsLevel, evaluateNoiseGate } from './audioGate';
+import { computeRmsLevel, evaluateNoiseGate, limiterMakeupGain } from './audioGate';
+
+describe('limiterMakeupGain', () => {
+  it('matches the Web Audio spec formula for the boost limiter (-3 dB, 20:1)', () => {
+    // full-scale gain -2.85 dB -> makeup (10^(2.85/20))^0.6 ≈ 1.218 (+1.71 dB)
+    expect(limiterMakeupGain(-3, 20)).toBeCloseTo(1.2178, 3);
+  });
+
+  it('is neutral when the curve does nothing at full scale', () => {
+    expect(limiterMakeupGain(0, 20)).toBeCloseTo(1, 6);
+    expect(limiterMakeupGain(-12, 1)).toBeCloseTo(1, 6);
+  });
+});
 
 describe('audioGate helpers', () => {
   it('computes normalized RMS levels from PCM samples', () => {

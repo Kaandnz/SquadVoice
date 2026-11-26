@@ -14,6 +14,18 @@ import {
   saveServerUrl,
 } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
+import {
+  chatScopeKey,
+  FIREBASE_PAGE_SIZE,
+  mayHaveMore,
+  mergeOlderMessages,
+  nextWindowSize,
+  SERVER_PAGE_SIZE,
+  type ChatScope,
+} from '../lib/chatHistory';
+import { appendSample, sampleFromStats, type QualitySample } from '../lib/connectionQuality';
+import { shouldReacquireMic } from '../lib/micDevices';
+import { classifyOwnVoiceEntry } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
 import { SquadWsClient } from '../lib/ws';
 import type {
@@ -108,6 +120,7 @@ export interface AppState {
   audioSettings: AudioSettings;
   peerVolumes: Record<string, number>;
   peerStats: Record<string, PeerStats>;
+  peerQualityHistory: Record<string, QualitySample[]>;
   turnEnabled: boolean;
   iceServers: RTCIceServer[];
 
@@ -119,6 +132,12 @@ export interface AppState {
   lastSoundboard: SoundboardEvent | null;
 
   toastError: string | null;
+  /** Neutral notice (auto-dismissed), e.g. "Mikrofon değişti". */
+  toastInfo: string | null;
+  micTestActive: boolean;
+  /** Per conversation (channel id or "dm:<peer>"): older messages may exist. */
+  chatHistoryMore: Record<string, boolean>;
+  loadingOlderMessages: boolean;
 
   // Auth & Profile
   setServerUrl: (url: string) => void;
@@ -189,6 +208,9 @@ export interface AppState {
   adminMoveVoice: (targetUid: string, targetChannelId: string) => Promise<void>;
 
   clearToast: () => void;
+  startMicTest: () => Promise<void>;
+  stopMicTest: () => void;
+  loadOlderMessages: () => Promise<void>;
 }
 
 let pttCleanup: (() => void) | null = null;
@@ -265,6 +287,11 @@ function ensureEngines() {
     for (const [uid, vol] of Object.entries(savedVolumes)) {
       audioEngine.setPeerVolume(uid, vol);
     }
+    audioEngine.setMicLostHandler(scheduleMicCheck);
+    audioEngine.setMicTestStoppedHandler(() => {
+      useAppStore.setState({ micTestActive: false });
+    });
+    navigator.mediaDevices?.addEventListener?.('devicechange', scheduleMicCheck);
   }
 
   if (!rtcMesh) {
@@ -354,7 +381,19 @@ function ensureEngines() {
         });
       },
       onStatsUpdate: (peerStats) => {
-        useAppStore.setState({ peerStats });
+        const now = Date.now();
+        useAppStore.setState((prev) => {
+          // Rolling ~1 minute per peer for the connection-quality sparklines;
+          // peers that left drop out because only current stats are carried over.
+          const peerQualityHistory: Record<string, QualitySample[]> = {};
+          for (const [uid, stats] of Object.entries(peerStats)) {
+            peerQualityHistory[uid] = appendSample(
+              prev.peerQualityHistory[uid],
+              sampleFromStats(stats, now),
+            );
+          }
+          return { peerStats, peerQualityHistory };
+        });
       },
     });
   }
@@ -363,6 +402,103 @@ function ensureEngines() {
     wsClient = new SquadWsClient(handleWsEvent, (wsStatus) => {
       useAppStore.setState({ wsStatus });
     });
+  }
+}
+
+let toastInfoTimer: number | null = null;
+
+function showInfo(message: string) {
+  if (toastInfoTimer !== null) window.clearTimeout(toastInfoTimer);
+  useAppStore.setState({ toastInfo: message });
+  toastInfoTimer = window.setTimeout(() => {
+    toastInfoTimer = null;
+    useAppStore.setState({ toastInfo: null });
+  }, 5000);
+}
+
+let micCheckTimer: number | null = null;
+let micRecovering = false;
+
+/** devicechange fires in bursts (each device of a headset); check once it settles. */
+function scheduleMicCheck() {
+  if (micCheckTimer !== null) window.clearTimeout(micCheckTimer);
+  micCheckTimer = window.setTimeout(() => {
+    micCheckTimer = null;
+    recoverMicIfNeeded().catch(() => {});
+  }, 600);
+}
+
+/** Re-opens the call's mic when it was unplugged or the system default changed. */
+async function recoverMicIfNeeded() {
+  const s = useAppStore.getState();
+  if (!s.activeVoiceChannelId || !audioEngine || !rtcMesh || micRecovering) return;
+  const track = audioEngine.getMicTrack();
+  const trackSettings = track?.getSettings?.() ?? {};
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const needed = shouldReacquireMic({
+    track: track
+      ? {
+          readyState: track.readyState,
+          deviceId: trackSettings.deviceId,
+          groupId: trackSettings.groupId,
+        }
+      : null,
+    selectedDeviceId: s.audioSettings.inputDeviceId,
+    devices,
+  });
+  if (!needed) return;
+
+  micRecovering = true;
+  try {
+    const stream = await audioEngine.acquireMic(useAppStore.getState().audioSettings, {
+      settleMs: 200,
+    });
+    if (!useAppStore.getState().activeVoiceChannelId) {
+      audioEngine.stopMic(); // left the call meanwhile
+      return;
+    }
+    await rtcMesh.setMicStream(stream);
+    syncMicTransmission();
+    const label = stream.getAudioTracks()[0]?.label;
+    showInfo(label ? `Mikrofon değişti: ${label}` : 'Mikrofon yeniden bağlandı.');
+  } catch (err) {
+    useAppStore.setState({
+      toastError:
+        err instanceof Error
+          ? `Mikrofon bulunamadı: ${err.message}`
+          : 'Mikrofon bulunamadı, bir mikrofon takıp tekrar dene.',
+    });
+  } finally {
+    micRecovering = false;
+  }
+}
+
+/** Tears down this device's call state and returns to a text channel if needed. */
+function leaveVoiceLocally(toast: string | null) {
+  const st = useAppStore.getState();
+  const prevVoiceId = st.activeVoiceChannelId;
+  const shouldReturnToText = !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
+  rtcMesh?.closeAll();
+  audioEngine?.destroyAll();
+  subscribeFirebaseSoundboard(null);
+  prevVoicePeerIds.clear();
+  useAppStore.setState({
+    activeVoiceChannelId: null,
+    forceMuted: false,
+    speaking: false,
+    localScreenStream: null,
+    localCameraStream: null,
+    remoteScreenStreams: {},
+    remoteCameraStreams: {},
+    focusedStreamUserId: null,
+    peerStats: {},
+    toastError: toast,
+  });
+  if (shouldReturnToText) {
+    const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
+    if (fallbackId) {
+      useAppStore.getState().selectTextChannel(fallbackId);
+    }
   }
 }
 
@@ -422,7 +558,17 @@ function pruneStoppedRemoteMedia(
   }
 }
 
-function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { kind: 'dm'; peerId: string }) {
+let currentChatScope: ChatScope | null = null;
+let currentChatWindow = FIREBASE_PAGE_SIZE;
+
+function markHistory(key: string, received: number, requested: number) {
+  useAppStore.setState((prev) => ({
+    chatHistoryMore: { ...prev.chatHistoryMore, [key]: mayHaveMore(received, requested) },
+    loadingOlderMessages: false,
+  }));
+}
+
+function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE_SIZE) {
   if (fbMessagesUnsub) {
     fbMessagesUnsub();
     fbMessagesUnsub = null;
@@ -434,6 +580,9 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
 
   const myUser = useAppStore.getState().user;
   if (!myUser) return;
+  currentChatScope = scope;
+  currentChatWindow = windowSize;
+  const historyKey = chatScopeKey(scope);
 
   if (scope.kind === 'channel') {
     fbMessagesUnsub = firebaseBackend.subscribeChannelMessages(scope.id, (msgs) => {
@@ -451,7 +600,8 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
           [scope.id]: 0,
         },
       }));
-    });
+      markHistory(historyKey, msgs.length, windowSize);
+    }, windowSize);
     fbTypingUnsub = firebaseBackend.subscribeTyping(scope.id, (users) => {
       useAppStore.setState({
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
@@ -472,7 +622,8 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
           [scope.peerId]: msgs,
         },
       }));
-    });
+      markHistory(historyKey, msgs.length, windowSize);
+    }, windowSize);
     fbTypingUnsub = firebaseBackend.subscribeTyping(pairId, (users) => {
       useAppStore.setState({
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
@@ -572,6 +723,8 @@ function stopFirebaseListeners() {
   prevVoicePeerIds.clear();
   lastRegularTextChannelId = null;
   selfLeavingVoice = false;
+  currentChatScope = null;
+  currentChatWindow = FIREBASE_PAGE_SIZE;
 }
 
 async function initializeFirebaseSession(user: PublicUser) {
@@ -686,63 +839,34 @@ async function initializeFirebaseSession(user: PublicUser) {
 
       const st = useAppStore.getState();
       if (st.activeVoiceChannelId && st.user) {
-        const myEntry = rawVoiceMembers.find((m) => m.user_id === st.user!.id);
-        if (myEntry?.kicked_by_admin) {
-          const prevVoiceId = st.activeVoiceChannelId;
-          const shouldReturnToText =
-            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
-          rtcMesh?.closeAll();
-          audioEngine?.destroyAll();
-          subscribeFirebaseSoundboard(null);
-          prevVoicePeerIds.clear();
-          useAppStore.setState({
-            activeVoiceChannelId: null,
-            forceMuted: false,
-            speaking: false,
-            localScreenStream: null,
-            localCameraStream: null,
-            remoteScreenStreams: {},
-            remoteCameraStreams: {},
-            focusedStreamUserId: null,
-            peerStats: {},
-            toastError: 'Yönetici tarafından ses odasından çıkarıldın.',
-          });
-          firebaseBackend.leaveVoice(st.user.id).catch(() => {});
-          if (shouldReturnToText) {
-            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
-            if (fallbackId) {
-              useAppStore.getState().selectTextChannel(fallbackId);
-            }
-          }
+        const userId = st.user.id;
+        const myEntry = rawVoiceMembers.find((m) => m.user_id === userId);
+        const status = classifyOwnVoiceEntry({
+          myEntry,
+          mySessionId: firebaseBackend.sessionId(),
+          restorePending: firebaseBackend.isVoiceRestorePending(userId),
+        });
+
+        if (status === 'restoring') {
+          // Our socket dropped and the server cleaned up the entry; firebaseBackend
+          // re-creates it as soon as we're back online, so stay in the room meanwhile.
           return;
         }
-        if (!myEntry) {
-          const prevVoiceId = st.activeVoiceChannelId;
-          const shouldReturnToText =
-            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
-          firebaseBackend.releaseVoiceOwnership(st.user.id);
-          rtcMesh?.closeAll();
-          audioEngine?.destroyAll();
-          subscribeFirebaseSoundboard(null);
-          prevVoicePeerIds.clear();
-          useAppStore.setState({
-            activeVoiceChannelId: null,
-            forceMuted: false,
-            speaking: false,
-            localScreenStream: null,
-            localCameraStream: null,
-            remoteScreenStreams: {},
-            remoteCameraStreams: {},
-            focusedStreamUserId: null,
-            peerStats: {},
-            toastError: selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.',
-          });
-          if (shouldReturnToText) {
-            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
-            if (fallbackId) {
-              useAppStore.getState().selectTextChannel(fallbackId);
-            }
-          }
+        if (status === 'kicked') {
+          leaveVoiceLocally('Yönetici tarafından ses odasından çıkarıldın.');
+          firebaseBackend.leaveVoice(userId).catch(() => {});
+          return;
+        }
+        if (status === 'taken-over') {
+          // Another device of this account joined: hand the entry over untouched
+          firebaseBackend.releaseVoiceOwnership(userId);
+          leaveVoiceLocally(null);
+          showInfo('Görüşme başka bir cihazına aktarıldı.');
+          return;
+        }
+        if (status === 'gone' || !myEntry) {
+          firebaseBackend.releaseVoiceOwnership(userId);
+          leaveVoiceLocally(selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.');
           return;
         }
 
@@ -801,6 +925,14 @@ async function initializeFirebaseSession(user: PublicUser) {
       }
     },
     onConnectionStatus: (wsStatus) => useAppStore.setState({ wsStatus }),
+    onVoiceRestoreFailed: (reason) => {
+      if (!useAppStore.getState().activeVoiceChannelId) return;
+      leaveVoiceLocally(
+        reason === 'kicked'
+          ? 'Yönetici tarafından ses odasından çıkarıldın.'
+          : 'Bağlantı geri geldi ama ses odasına yeniden katılınamadı.',
+      );
+    },
   });
 
   setupPttBinding(audioSettings);
@@ -932,8 +1064,16 @@ async function initializeAuthenticatedSession(serverUrl: string, token: string, 
   const firstText = channels.find((c) => c.kind === 'text')?.id || null;
   const initialMessages: Record<string, Message[]> = {};
   if (firstText) {
-    initialMessages[firstText] = await api.listMessages(serverUrl, token, firstText, 50);
+    initialMessages[firstText] = await api.listMessages(
+      serverUrl,
+      token,
+      firstText,
+      SERVER_PAGE_SIZE,
+    );
   }
+  const initialHistoryMore: Record<string, boolean> = firstText
+    ? { [firstText]: mayHaveMore(initialMessages[firstText].length, SERVER_PAGE_SIZE) }
+    : {};
 
   const audioSettings = useAppStore.getState().audioSettings;
   rtcMesh?.configure(user.id, rtc.iceServers, audioSettings);
@@ -946,6 +1086,7 @@ async function initializeAuthenticatedSession(serverUrl: string, token: string, 
     allUsers: users,
     activeTextChannelId: firstText,
     messagesByChannel: initialMessages,
+    chatHistoryMore: initialHistoryMore,
     iceServers: rtc.iceServers,
     turnEnabled: rtc.turnEnabled,
     authError: null,
@@ -994,6 +1135,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   audioSettings: loadAudioSettings(),
   peerVolumes: loadPeerVolumes(),
   peerStats: {},
+  peerQualityHistory: {},
   turnEnabled: false,
   iceServers: [],
 
@@ -1005,6 +1147,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastSoundboard: null,
 
   toastError: null,
+  toastInfo: null,
+  micTestActive: false,
+  chatHistoryMore: {},
+  loadingOlderMessages: false,
 
   setServerUrl: (url) => {
     const saved = saveServerUrl(url);
@@ -1209,9 +1355,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { serverUrl, token, messagesByChannel } = get();
     if (!token || messagesByChannel[channelId]) return;
     try {
-      const msgs = await api.listMessages(serverUrl, token, channelId, 50);
+      const msgs = await api.listMessages(serverUrl, token, channelId, SERVER_PAGE_SIZE);
       set((prev) => ({
         messagesByChannel: { ...prev.messagesByChannel, [channelId]: msgs },
+        chatHistoryMore: {
+          ...prev.chatHistoryMore,
+          [channelId]: mayHaveMore(msgs.length, SERVER_PAGE_SIZE),
+        },
       }));
     } catch (err) {
       set({ toastError: err instanceof Error ? err.message : 'Mesajlar yüklenemedi' });
@@ -1771,5 +1921,76 @@ export const useAppStore = create<AppState>((set, get) => ({
     await firebaseBackend.adminMoveVoice(targetUid, targetChannelId);
   },
 
-  clearToast: () => set({ toastError: null }),
+  clearToast: () => set({ toastError: null, toastInfo: null }),
+
+  startMicTest: async () => {
+    ensureEngines();
+    try {
+      await audioEngine!.startMicTest(get().audioSettings);
+      set({ micTestActive: true });
+    } catch (err) {
+      set({
+        micTestActive: false,
+        toastError:
+          err instanceof Error
+            ? `Mikrofon testi başlatılamadı: ${err.message}`
+            : 'Mikrofon testi başlatılamadı.',
+      });
+    }
+  },
+
+  stopMicTest: () => {
+    audioEngine?.stopMicTest();
+    set({ micTestActive: false });
+  },
+
+  loadOlderMessages: async () => {
+    const s = get();
+    if (s.loadingOlderMessages) return;
+
+    if (s.firebaseMode) {
+      const scope = currentChatScope;
+      if (!scope || !s.chatHistoryMore[chatScopeKey(scope)]) return;
+      const next = nextWindowSize(currentChatWindow);
+      if (next === null) {
+        set((prev) => ({ chatHistoryMore: { ...prev.chatHistoryMore, [chatScopeKey(scope)]: false } }));
+        return;
+      }
+      // Widen the live window; the new snapshot replaces the list and clears the flag
+      set({ loadingOlderMessages: true });
+      subscribeFirebaseChatScope(scope, next);
+      return;
+    }
+
+    const channelId = s.activeTextChannelId;
+    if (!channelId || !s.token || !s.chatHistoryMore[channelId]) return;
+    const oldest = (s.messagesByChannel[channelId] || [])[0];
+    if (!oldest) return;
+    set({ loadingOlderMessages: true });
+    try {
+      const older = await api.listMessages(
+        s.serverUrl,
+        s.token,
+        channelId,
+        SERVER_PAGE_SIZE,
+        oldest.created_at,
+      );
+      set((prev) => ({
+        messagesByChannel: {
+          ...prev.messagesByChannel,
+          [channelId]: mergeOlderMessages(prev.messagesByChannel[channelId] || [], older),
+        },
+        chatHistoryMore: {
+          ...prev.chatHistoryMore,
+          [channelId]: mayHaveMore(older.length, SERVER_PAGE_SIZE),
+        },
+        loadingOlderMessages: false,
+      }));
+    } catch (err) {
+      set({
+        loadingOlderMessages: false,
+        toastError: err instanceof Error ? err.message : 'Eski mesajlar yüklenemedi',
+      });
+    }
+  },
 }));

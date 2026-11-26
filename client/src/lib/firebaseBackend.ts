@@ -58,6 +58,30 @@ const SLOTS = ['1', '2', '3', '4', '5'] as const;
  * session of the same account dropped the live call, and an idle tab could steal offers.
  */
 let voiceOwnerUid: string | null = null;
+/** Identifies this tab/app instance among the account's sessions. */
+const SESSION_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+/** Last full voice entry this session wrote or saw for itself; used to restore it. */
+let voiceEntryCache: VoiceMemberState | null = null;
+/**
+ * True while the Firebase socket is down: the server runs our onDisconnect and deletes
+ * the voice entry, so when we're back we re-create it instead of leaving the room.
+ * Without this every Wi-Fi blip or phone screen-lock kicked the user out of voice.
+ */
+let voiceRestorePending = false;
+
+function isVoiceMember(m: Partial<VoiceMemberState> | null | undefined): m is VoiceMemberState {
+  return (
+    typeof m?.user_id === 'string' &&
+    typeof m.channel_id === 'string' &&
+    typeof m.username === 'string'
+  );
+}
+
+/** Minimum gap between presence self-heals, so a rejected write can't loop. */
+const PRESENCE_HEAL_INTERVAL_MS = 5000;
 
 function pickAvatarColor(username: string): string {
   let sum = 0;
@@ -129,6 +153,8 @@ export interface RealtimeCallbacks {
   onKicked: () => void;
   onRtcSignal: (signal: RtcSignalPayload) => void;
   onConnectionStatus: (status: 'connecting' | 'connected' | 'disconnected') => void;
+  /** We were in voice, went offline, and could not (or must not) rejoin on reconnect. */
+  onVoiceRestoreFailed?: (reason: 'kicked' | 'failed') => void;
 }
 
 export const firebaseBackend = {
@@ -327,13 +353,22 @@ export const firebaseBackend = {
     await update(ref(rtdb, `users/${userId}`), cleanPatch);
     await update(ref(rtdb, `presence/${userId}`), cleanPatch).catch(() => {});
 
-    if (inVoice) {
-      const voicePatch: Record<string, unknown> = {};
-      if (cleanPatch.display_name !== undefined) voicePatch.display_name = cleanPatch.display_name;
-      if (cleanPatch.avatar_color !== undefined) voicePatch.avatar_color = cleanPatch.avatar_color;
-      if (cleanPatch.avatar_url !== undefined) voicePatch.avatar_url = cleanPatch.avatar_url;
+    if (inVoice && voiceOwnerUid === userId) {
+      const voicePatch: Partial<VoiceMemberState> = {};
+      if (cleanPatch.display_name !== undefined) {
+        voicePatch.display_name = cleanPatch.display_name as string;
+      }
+      if (cleanPatch.avatar_color !== undefined) {
+        voicePatch.avatar_color = cleanPatch.avatar_color as string;
+      }
+      if (cleanPatch.avatar_url !== undefined) {
+        voicePatch.avatar_url = cleanPatch.avatar_url as string | null;
+      }
       if (Object.keys(voicePatch).length > 0) {
-        await update(ref(rtdb, `voice/${userId}`), voicePatch).catch(() => {});
+        if (voiceEntryCache) voiceEntryCache = { ...voiceEntryCache, ...voicePatch };
+        if (!voiceRestorePending) {
+          await update(ref(rtdb, `voice/${userId}`), voicePatch).catch(() => {});
+        }
       }
     }
   },
@@ -415,6 +450,9 @@ export const firebaseBackend = {
 
   async adminDisconnectVoice(targetUid: string): Promise<void> {
     const { rtdb } = getFirebaseServices();
+    // Survives the target being offline (its onDisconnect may wipe voice/{uid}), so
+    // a reconnecting client won't restore the call the admin ended.
+    await set(ref(rtdb, `voice_kicks/${targetUid}`), Date.now()).catch(() => {});
     await update(ref(rtdb, `voice/${targetUid}`), { kicked_by_admin: true });
     window.setTimeout(() => {
       remove(ref(rtdb, `voice/${targetUid}`)).catch(() => {});
@@ -541,12 +579,16 @@ export const firebaseBackend = {
     });
   },
 
-  subscribeDmMessages(pairId: string, onMessages: (messages: Message[]) => void): () => void {
+  subscribeDmMessages(
+    pairId: string,
+    onMessages: (messages: Message[]) => void,
+    limit = 80,
+  ): () => void {
     const { rtdb } = getFirebaseServices();
     const q = query(
       ref(rtdb, `dms/${pairId}`),
       orderByChild('created_at'),
-      limitToLast(80),
+      limitToLast(limit),
     );
     return onValue(q, (snap) => {
       const raw = (snap.val() as Record<string, Message> | null) || {};
@@ -624,31 +666,123 @@ export const firebaseBackend = {
     const voiceRef = ref(rtdb, `voice/${user.id}`);
     const mySignalsRef = ref(rtdb, `signals/${user.id}`);
 
+    let isConnected = false;
+    let lastPresenceHealAt = 0;
+    // Kept in sync with the server copy so a re-write never reverts a status change
+    // made after login (the login-time `user` snapshot used to be written back).
+    let selfPresence: PublicUser = {
+      id: user.id,
+      username: user.username,
+      display_name: user.display_name,
+      avatar_color: user.avatar_color,
+      avatar_url: user.avatar_url ?? null,
+      status: user.status ?? 'online',
+      custom_status: user.custom_status ?? null,
+      role: user.role,
+      created_at: user.created_at,
+    };
+
+    const writePresence = () => {
+      lastPresenceHealAt = Date.now();
+      set(presenceRef, sanitizeRtcPayload(selfPresence)).catch(() => {});
+    };
+
+    let selfPresenceMissing = false;
+    let presenceHealTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * Re-writes presence at most every PRESENCE_HEAL_INTERVAL_MS (so a rejected write
+     * can't loop). A heal that is too soon is deferred, not dropped: no further event
+     * may come to retry it.
+     */
+    const healPresence = () => {
+      if (presenceHealTimer !== null) return;
+      const wait = PRESENCE_HEAL_INTERVAL_MS - (Date.now() - lastPresenceHealAt);
+      if (wait <= 0) {
+        writePresence();
+        return;
+      }
+      presenceHealTimer = setTimeout(() => {
+        presenceHealTimer = null;
+        if (isConnected && selfPresenceMissing) writePresence();
+      }, wait);
+    };
+
+    /** Gives the entry up and tells the store to leave the room (reason for the notice). */
+    const abandonVoice = (reason: 'kicked' | 'failed') => {
+      if (voiceOwnerUid !== user.id) return;
+      firebaseBackend.releaseVoiceOwnership(user.id);
+      callbacks.onVoiceRestoreFailed?.(reason);
+    };
+
+    const restoreVoiceEntry = async () => {
+      const cached = voiceEntryCache;
+      if (!cached) {
+        voiceRestorePending = false;
+        return;
+      }
+      try {
+        const [voiceSnap, kickSnap] = await Promise.all([
+          get(voiceRef),
+          get(ref(rtdb, `voice_kicks/${user.id}`)),
+        ]);
+        if (voiceOwnerUid !== user.id) return; // left voice meanwhile
+
+        if (kickSnap.exists()) {
+          // An admin ended our call while we were away; don't bring it back
+          remove(kickSnap.ref).catch(() => {});
+          remove(voiceRef).catch(() => {});
+          abandonVoice('kicked');
+          return;
+        }
+
+        const current = voiceSnap.val() as Partial<VoiceMemberState> | null;
+        if (isVoiceMember(current) && current.session_id && current.session_id !== SESSION_ID) {
+          // Another device took the call over while we were offline; don't clobber it.
+          // The store sees that device's entry and leaves as 'taken-over'.
+          firebaseBackend.releaseVoiceOwnership(user.id);
+          return;
+        }
+        if (isVoiceMember(current) && (!current.session_id || current.session_id === SESSION_ID)) {
+          // The server never dropped us (short blip): keep the live entry as it is, so we
+          // don't overwrite admin changes made meanwhile (e.g. a force mute, which the
+          // rules would reject anyway)
+          voiceEntryCache = current;
+          voiceRestorePending = false;
+          return;
+        }
+
+        await set(
+          voiceRef,
+          sanitizeRtcPayload({ ...cached, speaking: false, kicked_by_admin: false }),
+        );
+        if (voiceOwnerUid === user.id) voiceRestorePending = false;
+      } catch {
+        // Can't get back in (e.g. rejected by the rules): leave instead of staying in a
+        // half-joined state where signals are ignored
+        remove(voiceRef).catch(() => {});
+        abandonVoice('failed');
+      }
+    };
+
     unsubs.push(
       onValue(connectedRef, (snap) => {
         const connected = Boolean(snap.val());
         if (connected) {
+          isConnected = true;
           callbacks.onConnectionStatus('connected');
           onDisconnect(presenceRef).remove().catch(() => {});
+          writePresence();
           if (voiceOwnerUid === user.id) {
             onDisconnect(voiceRef).remove().catch(() => {});
             onDisconnect(mySignalsRef).remove().catch(() => {});
+            if (voiceRestorePending) void restoreVoiceEntry();
           }
-          set(
-            presenceRef,
-            sanitizeRtcPayload({
-              id: user.id,
-              username: user.username,
-              display_name: user.display_name,
-              avatar_color: user.avatar_color,
-              avatar_url: user.avatar_url ?? null,
-              status: user.status ?? 'online',
-              custom_status: user.custom_status ?? null,
-              role: user.role,
-              created_at: user.created_at,
-            }),
-          ).catch(() => {});
         } else {
+          const wasConnected = isConnected;
+          isConnected = false;
+          if (wasConnected && voiceOwnerUid === user.id) {
+            voiceRestorePending = true;
+          }
           callbacks.onConnectionStatus('connecting');
         }
       }),
@@ -671,9 +805,18 @@ export const firebaseBackend = {
     unsubs.push(
       onValue(ref(rtdb, 'presence'), (snap) => {
         const raw = (snap.val() as Record<string, PublicUser> | null) || {};
-        const list = Object.values(raw).sort((a, b) =>
-          a.username.localeCompare(b.username),
-        );
+        const mine = raw[user.id];
+        selfPresenceMissing = !mine;
+        if (mine) {
+          selfPresence = { ...selfPresence, ...mine };
+        } else if (isConnected) {
+          // presence/{uid} is shared by all of this account's sessions; another one just
+          // closed and its onDisconnect removed it although we're still here.
+          healPresence();
+        }
+        const list = Object.values(raw)
+          .filter((u) => typeof u?.username === 'string')
+          .sort((a, b) => a.username.localeCompare(b.username));
         callbacks.onOnlineUsers(list);
       }),
     );
@@ -689,16 +832,16 @@ export const firebaseBackend = {
     unsubs.push(
       onValue(ref(rtdb, 'voice'), (snap) => {
         const raw = (snap.val() as Record<string, Partial<VoiceMemberState>> | null) || {};
+        const mine = raw[user.id];
+        if (voiceOwnerUid === user.id && !voiceRestorePending && isVoiceMember(mine)) {
+          // Track admin-side changes (force mute, move) so a restore re-creates them
+          voiceEntryCache = mine;
+        }
         // A late update() after the entry was removed recreates it as a stub like
         // { speaking: false }; without this filter the sort below threw and froze
         // voice state for everyone.
         const list = Object.values(raw)
-          .filter(
-            (m): m is VoiceMemberState =>
-              typeof m?.user_id === 'string' &&
-              typeof m.channel_id === 'string' &&
-              typeof m.username === 'string',
-          )
+          .filter(isVoiceMember)
           .sort((a, b) => a.username.localeCompare(b.username));
         callbacks.onVoiceMembers(list);
       }),
@@ -740,9 +883,15 @@ export const firebaseBackend = {
       for (const unsub of unsubs) {
         unsub();
       }
+      if (presenceHealTimer !== null) {
+        clearTimeout(presenceHealTimer);
+        presenceHealTimer = null;
+      }
       remove(presenceRef).catch(() => {});
       if (voiceOwnerUid === user.id) {
         voiceOwnerUid = null;
+        voiceEntryCache = null;
+        voiceRestorePending = false;
         remove(voiceRef).catch(() => {});
         remove(mySignalsRef).catch(() => {});
       }
@@ -753,12 +902,13 @@ export const firebaseBackend = {
   subscribeChannelMessages(
     channelId: string,
     onMessages: (messages: Message[]) => void,
+    limit = 80,
   ): () => void {
     const { rtdb } = getFirebaseServices();
     const q = query(
       ref(rtdb, `messages/${channelId}`),
       orderByChild('created_at'),
-      limitToLast(80),
+      limitToLast(limit),
     );
     return onValue(q, (snap) => {
       const raw = (snap.val() as Record<string, Message> | null) || {};
@@ -849,11 +999,15 @@ export const firebaseBackend = {
     const voiceRef = ref(rtdb, `voice/${user.id}`);
     const signalsRef = ref(rtdb, `signals/${user.id}`);
     await remove(signalsRef).catch(() => {});
+    // Joining on purpose clears any earlier admin kick marker
+    await remove(ref(rtdb, `voice_kicks/${user.id}`)).catch(() => {});
     // Claim the entry before writing it so offers that arrive right after are not dropped
     voiceOwnerUid = user.id;
+    voiceRestorePending = false;
     await onDisconnect(voiceRef).remove().catch(() => {});
     await onDisconnect(signalsRef).remove().catch(() => {});
     const member: VoiceMemberState = {
+      session_id: SESSION_ID,
       user_id: user.id,
       username: user.username,
       display_name: user.display_name,
@@ -870,6 +1024,7 @@ export const firebaseBackend = {
       camera_stream_id: state.camera_stream_id ?? null,
       speaking: false,
     };
+    voiceEntryCache = member;
     try {
       await set(voiceRef, sanitizeRtcPayload(member));
     } catch (err) {
@@ -881,6 +1036,7 @@ export const firebaseBackend = {
   async leaveVoice(userId: string): Promise<void> {
     const { rtdb } = getFirebaseServices();
     firebaseBackend.releaseVoiceOwnership(userId);
+    remove(ref(rtdb, `voice_kicks/${userId}`)).catch(() => {});
     await remove(ref(rtdb, `voice/${userId}`));
   },
 
@@ -888,6 +1044,8 @@ export const firebaseBackend = {
   releaseVoiceOwnership(userId: string): void {
     if (voiceOwnerUid !== userId) return;
     voiceOwnerUid = null;
+    voiceEntryCache = null;
+    voiceRestorePending = false;
     const { rtdb } = getFirebaseServices();
     onDisconnect(ref(rtdb, `voice/${userId}`)).cancel().catch(() => {});
     onDisconnect(ref(rtdb, `signals/${userId}`)).cancel().catch(() => {});
@@ -912,8 +1070,26 @@ export const firebaseBackend = {
     // update() on a removed entry would recreate it as a stub, e.g. the speaking:false
     // that fires while tearing down after a disconnect. Only the voice session writes.
     if (voiceOwnerUid !== userId) return;
+    if (voiceEntryCache) voiceEntryCache = { ...voiceEntryCache, ...patch };
+    // While offline the entry is gone server-side; the restore writes the merged state.
+    if (voiceRestorePending) return;
     const { rtdb } = getFirebaseServices();
     await update(ref(rtdb, `voice/${userId}`), sanitizeRtcPayload(patch));
+  },
+
+  /** True while we're offline/reconnecting and will re-create our own voice entry. */
+  isVoiceRestorePending(userId: string): boolean {
+    return voiceRestorePending && voiceOwnerUid === userId;
+  },
+
+  /** True if this tab/device is the one holding the account's voice entry. */
+  ownsVoice(userId: string): boolean {
+    return voiceOwnerUid === userId;
+  },
+
+  /** Random id of this tab/app instance, stored in the voice entry it owns. */
+  sessionId(): string {
+    return SESSION_ID;
   },
 
   async sendRtcSignal(targetUserId: string, payload: RtcSignalPayload): Promise<void> {

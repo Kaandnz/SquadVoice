@@ -57,6 +57,8 @@ export interface VoiceMemberState {
   deafened: boolean;
   force_muted?: boolean;
   kicked_by_admin?: boolean;
+  /** Which tab/device of the account holds this voice entry (Firebase mode). */
+  session_id?: string;
   screen_sharing: boolean;
   screen_stream_id: string | null;
   camera_on?: boolean;
@@ -120,7 +122,10 @@ export interface ScreenShareOptions {
 
 export interface PeerStats {
   rttMs: number | null;
+  /** Incoming audio packet loss over the last stats interval (not since call start). */
   packetLossPct: number | null;
+  /** Incoming audio jitter as reported by the receiver. */
+  jitterMs: number | null;
   audioKbps: number;
   videoKbps: number;
   videoResolution: string | null;
