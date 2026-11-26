@@ -720,6 +720,7 @@ async function initializeFirebaseSession(user: PublicUser) {
           const prevVoiceId = st.activeVoiceChannelId;
           const shouldReturnToText =
             !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
+          firebaseBackend.releaseVoiceOwnership(st.user.id);
           rtcMesh?.closeAll();
           audioEngine?.destroyAll();
           subscribeFirebaseSoundboard(null);
