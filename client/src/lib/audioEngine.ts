@@ -1,10 +1,24 @@
-import type { AudioSettings } from '../types/protocol';
+import type { AudioSettings, InputSensitivityMode } from '../types/protocol';
 import {
-  computeRmsLevel,
+  autoGateThreshold,
+  effectiveGateMode,
   evaluateNoiseGate,
+  INITIAL_NOISE_FLOOR_DB,
+  levelDb,
   limiterMakeupGain,
+  meterPercent,
+  METER_FLOOR_DB,
+  trackNoiseFloor,
   type GateState,
 } from './audioGate';
+import {
+  enterCallAudioSession,
+  leaveCallAudioSession,
+  prepareAudioSessionForMic,
+} from './audioSession';
+
+/** How often the mic level / noise gate is evaluated (ms). */
+const GATE_TICK_MS = 20;
 
 const BOOST_LIMITER_THRESHOLD_DB = -3;
 const BOOST_LIMITER_RATIO = 20;
@@ -23,6 +37,12 @@ interface RemotePeerAudio {
   volume: number; // 0.0 to 2.0
 }
 
+interface RemoteScreenAudio {
+  stream: MediaStream;
+  trackId: string;
+  audioEl: HTMLAudioElement;
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private hostContainer: HTMLDivElement | null = null;
@@ -38,6 +58,10 @@ export class AudioEngine {
 
   private remotePeers = new Map<string, RemotePeerAudio>();
   private peerVolumes = new Map<string, number>();
+  private screenAudioPeers = new Map<string, RemoteScreenAudio>();
+  private activeScreenUserId: string | null = null;
+  private screenVolume = 0.8;
+  private screenMuted = false;
 
   private onSpeakingChange: (speaking: boolean) => void;
   private onMicLevel: (level: number) => void;
@@ -52,16 +76,30 @@ export class AudioEngine {
     timer: number | null;
   } | null = null;
 
-  private vadThreshold = 14; // 1..95
+  // Input sensitivity / noise gate. The gate switches the SENT track on and off
+  // (track.enabled), so the browser's native AEC/NS/AGC pipeline stays untouched.
+  private gateMode: InputSensitivityMode = 'auto';
+  private manualThresholdDb = -50;
+  private noiseFloorDb = INITIAL_NOISE_FLOOR_DB;
+  private lastGateTickMs = 0;
+  /** Clone of the mic track used only for measuring, so a closed gate can still hear you. */
+  private vadTapTrack: MediaStreamTrack | null = null;
+  /** False if level metering couldn't be set up: then the gate never blocks (fail open). */
+  private vadAvailable = false;
+  private onGateThreshold: ((meterPct: number) => void) | null = null;
+  private lastReportedThresholdPct = -1;
 
   constructor(callbacks: {
     onSpeakingChange: (speaking: boolean) => void;
     onMicLevel: (level: number) => void;
     onAutoplayBlocked: (blocked: boolean) => void;
+    /** Current gate threshold on the 0..100 meter scale (moves in auto mode). */
+    onGateThreshold?: (meterPct: number) => void;
   }) {
     this.onSpeakingChange = callbacks.onSpeakingChange;
     this.onMicLevel = callbacks.onMicLevel;
     this.onAutoplayBlocked = callbacks.onAutoplayBlocked;
+    this.onGateThreshold = callbacks.onGateThreshold ?? null;
   }
 
   private ensureContext(): AudioContext {
@@ -112,6 +150,13 @@ export class AudioEngine {
         break;
       }
     }
+    if (!anyBlocked && this.activeScreenUserId) {
+      const screen = this.screenAudioPeers.get(this.activeScreenUserId);
+      const effective = !this.deafened && !this.screenMuted ? this.screenVolume : 0;
+      if (screen && effective > 0 && screen.audioEl.paused) {
+        anyBlocked = true;
+      }
+    }
     this.onAutoplayBlocked(anyBlocked);
   }
 
@@ -126,11 +171,30 @@ export class AudioEngine {
       // Ignore context errors on mobile
     }
 
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+
     for (const peer of this.remotePeers.values()) {
       try {
         await peer.audioEl.play();
       } catch {
         allPlayed = false;
+      }
+    }
+
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      const isActiveUnmuted =
+        uid === this.activeScreenUserId &&
+        !this.deafened &&
+        !this.screenMuted &&
+        this.screenVolume > 0;
+      try {
+        await entry.audioEl.play();
+      } catch {
+        if (isActiveUnmuted) {
+          allPlayed = false;
+        }
       }
     }
 
@@ -151,10 +215,61 @@ export class AudioEngine {
         await el.setSinkId(sinkId).catch(() => {});
       }
     }
+    for (const entry of this.screenAudioPeers.values()) {
+      const el = entry.audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof el.setSinkId === 'function') {
+        await el.setSinkId(sinkId).catch(() => {});
+      }
+    }
   }
 
-  setVadThreshold(threshold: number) {
-    this.vadThreshold = Math.max(1, Math.min(95, threshold));
+  /** Applies the input-sensitivity settings (push-to-talk bypasses the gate). */
+  applySensitivity(settings: Pick<AudioSettings, 'pttEnabled' | 'inputSensitivity' | 'gateThresholdDb'>) {
+    this.gateMode = effectiveGateMode(settings);
+    this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
+    this.reportThreshold();
+    this.applySentTrackEnabled();
+  }
+
+  /** Threshold in dBFS the gate opens at right now. */
+  currentThresholdDb(): number {
+    return this.gateMode === 'manual' ? this.manualThresholdDb : autoGateThreshold(this.noiseFloorDb);
+  }
+
+  private reportThreshold() {
+    const pct = meterPercent(this.currentThresholdDb());
+    if (pct !== this.lastReportedThresholdPct) {
+      this.lastReportedThresholdPct = pct;
+      this.onGateThreshold?.(pct);
+    }
+  }
+
+  /** Feeds one level measurement through noise-floor tracking and the gate. */
+  private processLevel(db: number, nowMs: number) {
+    const dt = this.lastGateTickMs ? nowMs - this.lastGateTickMs : GATE_TICK_MS;
+    this.lastGateTickMs = nowMs;
+    this.noiseFloorDb = trackNoiseFloor(this.noiseFloorDb, db, dt);
+    this.gateState = evaluateNoiseGate(this.gateState, db, this.currentThresholdDb(), nowMs);
+    this.reportThreshold();
+  }
+
+  /**
+   * Whether sound may go out right now. Fails open: if we can't measure (no metering,
+   * suspended AudioContext after an iOS interruption) we'd rather send background noise
+   * than silently drop someone's voice.
+   */
+  private gateAllowsSound(): boolean {
+    if (this.gateMode === 'off') return true;
+    const measuring = this.vadAvailable && this.ctx?.state === 'running';
+    return !measuring || this.gateState.open;
+  }
+
+  private applySentTrackEnabled() {
+    if (!this.micStream) return;
+    const allow = this.micTransmissionEnabled && this.gateAllowsSound();
+    for (const track of this.micStream.getAudioTracks()) {
+      if (track.enabled !== allow) track.enabled = allow;
+    }
   }
 
   async acquireMic(
@@ -162,7 +277,8 @@ export class AudioEngine {
     options?: { settleMs?: number },
   ): Promise<MediaStream> {
     this.stopMic();
-    this.setVadThreshold(settings.vadThreshold);
+    this.gateMode = effectiveGateMode(settings);
+    this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
 
     if (options?.settleMs && options.settleMs > 0) {
       await new Promise((r) => window.setTimeout(r, options.settleMs));
@@ -225,7 +341,10 @@ export class AudioEngine {
     let analyser: AnalyserNode | null = null;
     let timer: number | null = null;
     if (ownStream) {
-      // Outside a call the VAD loop isn't running, so feed the level meter ourselves
+      // Outside a call the VAD loop isn't running: meter the mic ourselves and apply the
+      // same gate to the playback, so you hear exactly what friends would receive.
+      this.gateMode = effectiveGateMode(settings);
+      this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
       analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       source.connect(analyser);
@@ -233,9 +352,14 @@ export class AudioEngine {
       const tap = analyser;
       timer = window.setInterval(() => {
         tap.getFloatTimeDomainData(buf);
-        this.onMicLevel(computeRmsLevel(buf));
-      }, 60);
+        const db = levelDb(buf);
+        this.onMicLevel(meterPercent(db));
+        this.processLevel(db, performance.now());
+        const open = this.gateMode === 'off' || this.gateState.open;
+        gain.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, open ? 0.005 : 0.03);
+      }, GATE_TICK_MS);
     }
+    // In a call the test plays the sent track itself, which the gate already switches
     this.micTest = { ownStream, source, gain, analyser, timer };
   }
 
@@ -258,6 +382,7 @@ export class AudioEngine {
     }
     if (test.ownStream) {
       for (const t of test.ownStream.getTracks()) t.stop();
+      if (!this.micStream) leaveCallAudioSession();
       if (!this.vadTimer) this.onMicLevel(0);
     }
   }
@@ -287,6 +412,7 @@ export class AudioEngine {
     }
     attempts.push(baseProcessing, true);
 
+    prepareAudioSessionForMic();
     let stream: MediaStream | null = null;
     let lastError: unknown = null;
     for (const audio of attempts) {
@@ -300,13 +426,14 @@ export class AudioEngine {
     if (!stream) {
       throw lastError instanceof Error ? lastError : new Error('Mikrofon açılamadı');
     }
+    enterCallAudioSession();
     return stream;
   }
 
   async applyAudioConstraints(
     settings: AudioSettings,
   ): Promise<{ stream: MediaStream; replaced: boolean }> {
-    this.setVadThreshold(settings.vadThreshold);
+    this.applySensitivity(settings);
     const track = this.micStream?.getAudioTracks()[0];
     if (
       this.micStream &&
@@ -333,48 +460,55 @@ export class AudioEngine {
   }
 
   private setupVad(stream: MediaStream) {
+    this.vadAvailable = false;
+    this.gateState = { open: false, hangoverUntil: 0 };
+    this.lastGateTickMs = 0;
     try {
       const ctx = this.ensureContext();
       if (ctx.state === 'suspended') {
         ctx.resume().catch(() => {});
       }
-      this.vadSource = ctx.createMediaStreamSource(stream);
+      // Measure a clone: the sent track gets disabled while the gate is closed, and a
+      // disabled track reads as silence, so the gate could never open again.
+      const sent = stream.getAudioTracks()[0];
+      if (!sent) return;
+      const tap = sent.clone();
+      tap.enabled = true;
+      this.vadTapTrack = tap;
+      this.vadSource = ctx.createMediaStreamSource(new MediaStream([tap]));
       this.vadAnalyser = ctx.createAnalyser();
       this.vadAnalyser.fftSize = 512;
       // Passive tap only — never routed to destination or WebRTC transmit
       this.vadSource.connect(this.vadAnalyser);
+      ctx.onstatechange = () => this.applySentTrackEnabled();
 
       const buf = new Float32Array(this.vadAnalyser.fftSize);
-      this.gateState = { open: false, hangoverUntil: 0 };
+      this.vadAvailable = true;
       this.vadTimer = window.setInterval(() => {
         if (!this.vadAnalyser) return;
         this.vadAnalyser.getFloatTimeDomainData(buf);
-        const level = computeRmsLevel(buf);
-        this.onMicLevel(level);
+        const db = levelDb(buf);
+        this.onMicLevel(meterPercent(db));
+        this.processLevel(db, performance.now());
+        this.applySentTrackEnabled();
 
-        this.gateState = evaluateNoiseGate(
-          this.gateState,
-          level,
-          this.vadThreshold,
-          performance.now(),
-        );
+        // The speaking ring shows exactly when sound goes out
         const shouldSpeak = this.micTransmissionEnabled && this.gateState.open;
         if (shouldSpeak !== this.currentlySpeaking) {
           this.currentlySpeaking = shouldSpeak;
           this.onSpeakingChange(shouldSpeak);
         }
-      }, 60);
+      }, GATE_TICK_MS);
     } catch {
-      // VAD optional if AudioContext restricted
+      // Metering unavailable (restricted AudioContext): gate fails open
+      this.vadAvailable = false;
     }
+    this.applySentTrackEnabled();
   }
 
   setMicEnabled(enabled: boolean) {
     this.micTransmissionEnabled = enabled;
-    if (!this.micStream) return;
-    for (const track of this.micStream.getAudioTracks()) {
-      track.enabled = enabled;
-    }
+    this.applySentTrackEnabled();
     if (!enabled && this.currentlySpeaking) {
       this.currentlySpeaking = false;
       this.onSpeakingChange(false);
@@ -386,6 +520,10 @@ export class AudioEngine {
     for (const peer of this.remotePeers.values()) {
       this.applyPeerRouting(peer);
     }
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      this.applyScreenAudioRouting(uid, entry);
+    }
+    this.checkAutoplayState();
   }
 
   setPeerVolume(userId: string, volume: number) {
@@ -402,18 +540,7 @@ export class AudioEngine {
     return this.peerVolumes.get(userId) ?? 1.0;
   }
 
-  setPeerStream(userId: string, stream: MediaStream) {
-    const existing = this.remotePeers.get(userId);
-    if (existing && existing.stream.id === stream.id) {
-      existing.audioEl.play().catch(() => {
-        this.onAutoplayBlocked(true);
-      });
-      return;
-    }
-
-    this.removePeer(userId);
-
-    const volume = this.peerVolumes.get(userId) ?? 1.0;
+  private createHostedAudioElement(stream: MediaStream): HTMLAudioElement {
     const audioEl = document.createElement('audio');
     audioEl.autoplay = true;
     audioEl.setAttribute('autoplay', '');
@@ -433,6 +560,26 @@ export class AudioEngine {
         el.setSinkId(this.outputDeviceId).catch(() => {});
       }
     }
+
+    return audioEl;
+  }
+
+  setPeerStream(userId: string, stream: MediaStream) {
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+    const existing = this.remotePeers.get(userId);
+    if (existing && existing.stream.id === stream.id) {
+      existing.audioEl.play().catch(() => {
+        this.onAutoplayBlocked(true);
+      });
+      return;
+    }
+
+    this.removePeer(userId);
+
+    const volume = this.peerVolumes.get(userId) ?? 1.0;
+    const audioEl = this.createHostedAudioElement(stream);
 
     const entry: RemotePeerAudio = {
       stream,
@@ -523,7 +670,109 @@ export class AudioEngine {
     peer.limiterNode = null;
   }
 
+  setScreenAudioStream(userId: string, stream: MediaStream) {
+    const trackId = stream.getAudioTracks()[0]?.id ?? stream.id;
+    const existing = this.screenAudioPeers.get(userId);
+    if (existing && existing.trackId === trackId) {
+      this.applyScreenAudioRouting(userId, existing);
+      if (this.micStream) {
+        enterCallAudioSession();
+      }
+      existing.audioEl
+        .play()
+        .then(() => {
+          this.checkAutoplayState();
+        })
+        .catch(() => {
+          this.checkAutoplayState();
+        });
+      return;
+    }
+
+    this.removeScreenAudio(userId);
+
+    const audioEl = this.createHostedAudioElement(stream);
+    const entry: RemoteScreenAudio = {
+      stream,
+      trackId,
+      audioEl,
+    };
+
+    audioEl.onplaying = () => {
+      this.checkAutoplayState();
+    };
+    audioEl.onpause = () => {
+      this.checkAutoplayState();
+    };
+
+    this.screenAudioPeers.set(userId, entry);
+    this.applyScreenAudioRouting(userId, entry);
+
+    if (this.micStream) {
+      enterCallAudioSession();
+    }
+
+    audioEl
+      .play()
+      .then(() => {
+        this.checkAutoplayState();
+      })
+      .catch(() => {
+        this.checkAutoplayState();
+      });
+  }
+
+  removeScreenAudio(userId: string, onlyTrackId?: string) {
+    const existing = this.screenAudioPeers.get(userId);
+    if (!existing) return;
+    if (onlyTrackId && existing.trackId !== onlyTrackId) return;
+    existing.audioEl.onplaying = null;
+    existing.audioEl.onpause = null;
+    existing.audioEl.pause();
+    existing.audioEl.srcObject = null;
+    existing.audioEl.remove();
+    this.screenAudioPeers.delete(userId);
+    this.checkAutoplayState();
+  }
+
+  setActiveScreenAudio(userId: string | null, volume: number, muted: boolean) {
+    this.activeScreenUserId = userId;
+    this.screenVolume = Math.max(0, Math.min(1, volume));
+    this.screenMuted = muted;
+
+    for (const [uid, entry] of this.screenAudioPeers.entries()) {
+      this.applyScreenAudioRouting(uid, entry);
+      if (
+        uid === userId &&
+        !this.deafened &&
+        !this.screenMuted &&
+        this.screenVolume > 0 &&
+        entry.audioEl.paused
+      ) {
+        entry.audioEl
+          .play()
+          .then(() => {
+            this.checkAutoplayState();
+          })
+          .catch(() => {
+            this.checkAutoplayState();
+          });
+      }
+    }
+    this.checkAutoplayState();
+  }
+
+  private applyScreenAudioRouting(userId: string, entry: RemoteScreenAudio) {
+    const effective =
+      this.activeScreenUserId === userId && !this.deafened && !this.screenMuted
+        ? this.screenVolume
+        : 0;
+    entry.audioEl.volume = Math.max(0, Math.min(1, effective));
+    entry.audioEl.muted = effective === 0;
+  }
+
   removePeer(userId: string) {
+    this.removeScreenAudio(userId);
     const existing = this.remotePeers.get(userId);
     if (!existing) return;
     existing.audioEl.onplaying = null;
@@ -550,12 +799,16 @@ export class AudioEngine {
     }
     this.vadSource = null;
     this.vadAnalyser = null;
+    this.vadTapTrack?.stop();
+    this.vadTapTrack = null;
+    this.vadAvailable = false;
     this.gateState = { open: false, hangoverUntil: 0 };
     if (this.micStream) {
       for (const t of this.micStream.getTracks()) {
         t.stop();
       }
       this.micStream = null;
+      leaveCallAudioSession();
     }
     if (this.currentlySpeaking) {
       this.currentlySpeaking = false;
@@ -569,6 +822,10 @@ export class AudioEngine {
     for (const userId of Array.from(this.remotePeers.keys())) {
       this.removePeer(userId);
     }
+    for (const userId of Array.from(this.screenAudioPeers.keys())) {
+      this.removeScreenAudio(userId);
+    }
+    this.activeScreenUserId = null;
     this.onAutoplayBlocked(false);
   }
 }

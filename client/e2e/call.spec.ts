@@ -20,6 +20,8 @@ interface HarnessApi {
   stopMicTest(): void;
   micTestRunning(): boolean;
   peakMicLevel(): number;
+  setSensitivity(mode: 'auto' | 'manual' | 'off', gateThresholdDb?: number): void;
+  micTrackEnabled(): boolean | null;
   leave(): void;
 }
 
@@ -170,6 +172,30 @@ test.describe('voice call between two peers', () => {
     await expectAudioFlowing(bob, 'alice');
     // The new mic is swapped in place; the call is not rebuilt
     expect(await bob.evaluate(() => window.sv.pcId('alice'))).toBe(bobPcBefore);
+  });
+
+  test('input sensitivity really gates what is sent, and "Kapalı" sends everything', async ({
+    context,
+  }, info) => {
+    const { alice, bob } = await setupCall(context, info.testId);
+    await Promise.all([start(alice, ['bob']), start(bob, ['alice'])]);
+    await expectConnected(bob, 'alice');
+    await expectAudioFlowing(bob, 'alice'); // auto mode lets the voice through
+
+    // Threshold above anything the mic produces: nothing audible may go out
+    await alice.evaluate(() => window.sv.setSensitivity('manual', 0));
+    await expect.poll(() => alice.evaluate(() => window.sv.micTrackEnabled())).toBe(false);
+    await bob.waitForTimeout(1500); // let audio already in flight drain
+    const gatedStart = await bob.evaluate(() => window.sv.inboundAudio('alice'));
+    await bob.waitForTimeout(3000);
+    const gatedEnd = await bob.evaluate(() => window.sv.inboundAudio('alice'));
+    expect(gatedEnd.bytes, 'the connection keeps flowing').toBeGreaterThan(gatedStart.bytes);
+    expect(gatedEnd.energy - gatedStart.energy, 'but no sound arrives').toBeLessThan(1e-4);
+
+    // Gate off: sound goes out again
+    await alice.evaluate(() => window.sv.setSensitivity('off'));
+    await expect.poll(() => alice.evaluate(() => window.sv.micTrackEnabled())).toBe(true);
+    await expectAudioFlowing(bob, 'alice');
   });
 
   test('a stray second session of the same peer does not cause a reconnect storm', async ({

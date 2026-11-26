@@ -96,6 +96,8 @@ export interface RtcConfigResponse {
   turnEnabled: boolean;
 }
 
+export type InputSensitivityMode = 'auto' | 'manual' | 'off';
+
 export interface AudioSettings {
   inputDeviceId: string;
   outputDeviceId: string;
@@ -104,7 +106,13 @@ export interface AudioSettings {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
-  vadThreshold: number;
+  /**
+   * Input sensitivity (noise gate): 'auto' follows the room's noise, 'manual' uses
+   * gateThresholdDb, 'off' always sends. Sound below the threshold is not transmitted.
+   */
+  inputSensitivity: InputSensitivityMode;
+  /** Manual gate threshold in dBFS (-80..-10). */
+  gateThresholdDb: number;
   pttEnabled: boolean;
   pttKey: string;
   soundsEnabled: boolean;

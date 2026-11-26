@@ -57,7 +57,8 @@ const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  vadThreshold: 14,
+  inputSensitivity: 'auto',
+  gateThresholdDb: -50,
   pttEnabled: false,
   pttKey: 'Backquote',
   soundsEnabled: true,
@@ -193,6 +194,7 @@ export interface AppState {
   stopScreenShare: () => void;
   playRoomSoundboard: (sound: SoundboardId) => Promise<void>;
   setFocusedStreamUser: (userId: string | null) => void;
+  setScreenAudioConfig: (userId: string | null, volume: number, muted: boolean) => void;
   setPeerVolume: (userId: string, volume: number) => void;
   updateAudioSettings: (patch: Partial<AudioSettings>) => Promise<void>;
   unlockAudio: () => Promise<void>;
@@ -282,7 +284,11 @@ function ensureEngines() {
       onAutoplayBlocked: (needsAudioUnlock) => {
         useAppStore.setState({ needsAudioUnlock });
       },
+      onGateThreshold: (threshold) => {
+        useMicLevelStore.getState().setGateThreshold(threshold);
+      },
     });
+    audioEngine.applySensitivity(loadAudioSettings());
     const savedVolumes = loadPeerVolumes();
     for (const [uid, vol] of Object.entries(savedVolumes)) {
       audioEngine.setPeerVolume(uid, vol);
@@ -1831,6 +1837,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setFocusedStreamUser: (userId) => set({ focusedStreamUserId: userId }),
 
+  setScreenAudioConfig: (userId, volume, muted) => {
+    audioEngine?.setActiveScreenAudio(userId, volume, muted);
+  },
+
   setPeerVolume: (userId, volume) => {
     const clamped = Math.max(0, Math.min(2, volume));
     audioEngine?.setPeerVolume(userId, clamped);
@@ -1847,7 +1857,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(next));
     set({ audioSettings: next });
     rtcMesh?.updateAudioSettings(next);
-    audioEngine?.setVadThreshold(next.vadThreshold);
+    audioEngine?.applySensitivity(next);
 
     if (patch.pttEnabled !== undefined || patch.pttKey !== undefined) {
       setupPttBinding(next);

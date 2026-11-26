@@ -1,6 +1,29 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Copy, KeyRound, Mic, Settings, Square, X } from 'lucide-react';
+import { dbFromMeterPercent, meterPercent } from '../lib/audioGate';
 import { currentInviteLink } from '../lib/invite';
+import type { InputSensitivityMode } from '../types/protocol';
+
+const MANUAL_MIN_DB = -80;
+const MANUAL_MAX_DB = -10;
+
+const SENSITIVITY_MODES: Array<{ id: InputSensitivityMode; label: string; hint: string }> = [
+  {
+    id: 'auto',
+    label: 'Otomatik',
+    hint: 'Eşik ortam gürültüne göre kendini ayarlar. Klavye, fan gibi eşiğin altındaki sesler gönderilmez.',
+  },
+  {
+    id: 'manual',
+    label: 'Elle',
+    hint: 'Konuşurken çubuk yeşile, susunca griye dönecek şekilde eşiği ayarla. Gri kısım gönderilmez.',
+  },
+  {
+    id: 'off',
+    label: 'Kapalı',
+    hint: 'Mikrofon her zaman açık: arka plan sesleri de dahil her şey gönderilir.',
+  },
+];
 import { useAppStore } from '../store/useAppStore';
 import { useMicLevelStore } from '../store/useMicLevelStore';
 
@@ -28,6 +51,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     stopMicTest,
   } = useAppStore();
   const micLevel = useMicLevelStore((s) => s.micLevel);
+  const liveThresholdPct = useMicLevelStore((s) => s.gateThreshold);
+  const sensitivity = audioSettings.inputSensitivity;
+  // The level is only measured while in a call or during the mic test
+  const metering = micTestActive || Boolean(activeVoiceChannelId);
+  const gateOff = sensitivity === 'off' || audioSettings.pttEnabled;
+  // Manual: show the slider value right away; auto: the engine's live threshold
+  const thresholdPct =
+    sensitivity === 'manual' ? meterPercent(audioSettings.gateThresholdDb) : liveThresholdPct;
+  const thresholdDb = Math.round(
+    sensitivity === 'manual' ? audioSettings.gateThresholdDb : dbFromMeterPercent(liveThresholdPct),
+  );
 
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
@@ -142,34 +176,56 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
           <div className="stack-field">
             <div className="row-between">
-              <span>Mikrofon Hassasiyeti (Konuşma Göstergesi: {audioSettings.vadThreshold})</span>
-              <span className="muted-text">Canlı Seviye: {micLevel}%</span>
+              <span>Mikrofon Hassasiyeti</span>
+              <span className="muted-text">
+                {metering
+                  ? `Seviye ${Math.round(dbFromMeterPercent(micLevel))} dB · eşik ${thresholdDb} dB`
+                  : 'Seviyeyi görmek için mikrofonu test et'}
+              </span>
             </div>
-            <div className="mic-meter-track">
+            <div className="segmented-row" role="radiogroup" aria-label="Mikrofon hassasiyeti">
+              {SENSITIVITY_MODES.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={sensitivity === m.id}
+                  className={sensitivity === m.id ? 'active' : ''}
+                  disabled={audioSettings.pttEnabled}
+                  onClick={() => updateAudioSettings({ inputSensitivity: m.id })}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className="mic-meter-track" aria-hidden="true">
               <div
                 className="mic-meter-fill"
                 style={{
                   width: `${micLevel}%`,
-                  backgroundColor:
-                    micLevel >= audioSettings.vadThreshold ? '#3BA55D' : '#72767D',
+                  // Green = this much would be sent; grey = cut by the gate
+                  backgroundColor: gateOff || micLevel >= thresholdPct ? '#3BA55D' : '#72767D',
                 }}
               />
-              <div
-                className="mic-meter-threshold"
-                style={{ left: `${audioSettings.vadThreshold}%` }}
-              />
+              {!gateOff && (
+                <div className="mic-meter-threshold" style={{ left: `${thresholdPct}%` }} />
+              )}
             </div>
-            <input
-              type="range"
-              min={2}
-              max={60}
-              value={audioSettings.vadThreshold}
-              onChange={(e) =>
-                updateAudioSettings({ vadThreshold: Number(e.target.value) })
-              }
-            />
+            {sensitivity === 'manual' && !audioSettings.pttEnabled && (
+              <input
+                type="range"
+                min={MANUAL_MIN_DB}
+                max={MANUAL_MAX_DB}
+                step={1}
+                value={audioSettings.gateThresholdDb}
+                aria-label="Gürültü kapısı eşiği (dB)"
+                onChange={(e) => updateAudioSettings({ gateThresholdDb: Number(e.target.value) })}
+              />
+            )}
             <span className="muted-text" style={{ fontSize: '0.75rem' }}>
-              Sadece yeşil konuşma göstergesini ayarlar; sesini kesmez.
+              {audioSettings.pttEnabled
+                ? 'Bas-Konuş açıkken tuşa bastığın sürece her şey gönderilir; hassasiyet devre dışı.'
+                : SENSITIVITY_MODES.find((m) => m.id === sensitivity)?.hint}
             </span>
             <div className="mic-test-row">
               <button
@@ -318,7 +374,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 autoGainControl: true,
                 opusBitrateKbps: 96,
                 stereo: false,
-                vadThreshold: 14,
+                inputSensitivity: 'auto',
               })
             }
           >
