@@ -780,6 +780,26 @@ button {
   font-size: 0.86rem;
 }
 
+.invite-link-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.invite-link-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.invite-link-row .muted-text {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
 .error-fallback {
   display: flex;
   align-items: flex-start;

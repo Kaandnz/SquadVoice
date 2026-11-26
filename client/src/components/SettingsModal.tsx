@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Copy, KeyRound, Mic, Settings, Square, X } from 'lucide-react';
+import { currentInviteLink } from '../lib/invite';
 import { useAppStore } from '../store/useAppStore';
 import { useMicLevelStore } from '../store/useMicLevelStore';
 
@@ -387,12 +388,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   type="button"
                   className="secondary-btn small"
                   onClick={() => {
-                    navigator.clipboard?.writeText(adminInviteCode).catch(() => {});
+                    // Share a one-click link when there's a public address, else the code
+                    const text = currentInviteLink(adminInviteCode) ?? adminInviteCode;
+                    navigator.clipboard?.writeText(text).catch(() => {});
                     setCopiedInvite(true);
                     setTimeout(() => setCopiedInvite(false), 1500);
                   }}
+                  title="Tek tıkla katılma linkini kopyalar"
                 >
-                  <Copy size={13} /> {copiedInvite ? 'Kopyalandı' : 'Kopyala'}
+                  <Copy size={13} /> {copiedInvite ? 'Kopyalandı' : 'Linki Kopyala'}
                 </button>
               </div>
             )}

@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import {
   Copy,
   Crown,
+  Link2,
   Radio,
   RefreshCw,
   Shield,
@@ -10,6 +11,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { currentInviteLink } from '../lib/invite';
 import { useAppStore } from '../store/useAppStore';
 import type { TurnConfig } from '../types/protocol';
 import { ConfirmButton } from './ConfirmButton';
@@ -66,11 +68,17 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
 
   if (!open || user?.role !== 'admin') return null;
 
+  const inviteLink = currentInviteLink(adminInviteCode);
+  const inviteDirty = inviteInput.trim() !== (adminInviteCode ?? '').trim();
+
   const generateCode = () => {
+    // The code is the only gate on sign-ups: 8 chars from a CSPRNG (~1e12 combinations)
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint8Array(8);
+    crypto.getRandomValues(bytes);
     let code = 'SQUAD-';
-    for (let i = 0; i < 4; i += 1) {
-      code += chars[Math.floor(Math.random() * chars.length)];
+    for (const b of bytes) {
+      code += chars[b % chars.length];
     }
     setInviteInput(code);
   };
@@ -222,6 +230,26 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
                   </button>
                 </div>
               </label>
+
+              {inviteLink && (
+                <div className="invite-link-row">
+                  <button
+                    type="button"
+                    className="secondary-btn small"
+                    disabled={inviteDirty}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(inviteLink).catch(() => {});
+                      setStatusMsg('Davet linki kopyalandı — arkadaşın linke tıklayıp hemen kayıt olabilir.');
+                    }}
+                    title={inviteDirty ? 'Önce yeni kodu kaydet' : 'Tek tıkla katılma linki'}
+                  >
+                    <Link2 size={14} /> Davet linkini kopyala
+                  </button>
+                  <span className="muted-text">
+                    {inviteDirty ? 'Yeni kodu kaydettikten sonra link güncellenir.' : inviteLink}
+                  </span>
+                </div>
+              )}
 
               <button type="submit" className="primary-btn" disabled={busy}>
                 Ayarları Kaydet
