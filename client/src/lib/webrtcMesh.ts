@@ -1,7 +1,16 @@
 import type { AudioSettings, PeerStats, ScreenShareOptions } from '../types/protocol';
 import type { AudioEngine } from './audioEngine';
 import { findSelectedCandidatePair } from './rtcStats';
-import { isInitiatorPeer, isPolitePeer, sanitizeRtcPayload, tuneOpusSdp } from './sdp';
+import {
+  isInitiatorPeer,
+  isPolitePeer,
+  sanitizeRtcPayload,
+  sdpSessionId,
+  tuneOpusSdp,
+} from './sdp';
+
+/** How long a 'disconnected' ICE state may last before we actively restart ICE. */
+const ICE_DISCONNECT_GRACE_MS = 4000;
 
 interface PeerEntry {
   userId: string;
@@ -11,6 +20,9 @@ interface PeerEntry {
   hasNegotiated: boolean;
   needsRenegotiation: boolean;
   watchdogTimer: number | null;
+  iceRestartTimer: number | null;
+  /** SDP o= session id of the remote RTCPeerConnection we are negotiating with. */
+  remoteSdpSessionId: string | null;
   queue: Promise<void>;
   makingOffer: boolean;
   ignoreOffer: boolean;
@@ -78,8 +90,44 @@ export class WebRtcMeshManager {
       return;
     }
     this.iceServers = iceServers;
-    if (this.peers.size > 0) {
-      this.reconnectAllPeers();
+    // Cloudflare TURN hands out fresh credentials on every fetch, so this changes often.
+    // Swap the servers in place (used by the next ICE restart) instead of tearing down
+    // calls that are working: rebuilding only our side used to strand the other side.
+    for (const entry of this.peers.values()) {
+      try {
+        entry.pc.setConfiguration({ ...entry.pc.getConfiguration(), iceServers });
+      } catch (err) {
+        console.warn('ICE server update failed:', entry.userId, err);
+      }
+    }
+  }
+
+  private isFromRebuiltRemote(entry: PeerEntry | undefined, incomingSession: string | null) {
+    return Boolean(
+      entry &&
+        incomingSession &&
+        entry.remoteSdpSessionId &&
+        entry.remoteSdpSessionId !== incomingSession,
+    );
+  }
+
+  /** Sends a fresh offer right away (skipping the initiator rule) if nothing was negotiated yet. */
+  private offerNowIfIdle(entry: PeerEntry) {
+    if (entry.watchdogTimer !== null) {
+      window.clearTimeout(entry.watchdogTimer);
+      entry.watchdogTimer = null;
+    }
+    this.enqueue(entry, async () => {
+      if (!entry.hasNegotiated && entry.pc.signalingState === 'stable') {
+        await this.sendOfferNow(entry);
+      }
+    });
+  }
+
+  private clearIceRestartTimer(entry: PeerEntry) {
+    if (entry.iceRestartTimer !== null) {
+      window.clearTimeout(entry.iceRestartTimer);
+      entry.iceRestartTimer = null;
     }
   }
 
@@ -227,6 +275,12 @@ export class WebRtcMeshManager {
       this.closePeer(id);
     }
     this.syncPeers(ids);
+    // The other side still holds the old connection and doesn't know we rebuilt; offer now
+    // so it sees our new session id and rebuilds too, rather than waiting on the watchdog.
+    for (const id of ids) {
+      const entry = this.peers.get(id);
+      if (entry) this.offerNowIfIdle(entry);
+    }
   }
 
   /**
@@ -310,6 +364,8 @@ export class WebRtcMeshManager {
       hasNegotiated: false,
       needsRenegotiation: false,
       watchdogTimer: null,
+      iceRestartTimer: null,
+      remoteSdpSessionId: null,
       queue: Promise.resolve(),
       makingOffer: false,
       ignoreOffer: false,
@@ -373,8 +429,27 @@ export class WebRtcMeshManager {
     };
 
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'failed' && typeof pc.restartIce === 'function') {
-        pc.restartIce();
+      const state = pc.iceConnectionState;
+      if (state === 'failed') {
+        this.clearIceRestartTimer(entry);
+        if (typeof pc.restartIce === 'function') pc.restartIce();
+      } else if (state === 'disconnected') {
+        // Often a brief blip that heals itself; if it doesn't, restart ICE now instead of
+        // sitting silent for the ~30s the browser takes to declare 'failed'.
+        if (entry.iceRestartTimer === null) {
+          entry.iceRestartTimer = window.setTimeout(() => {
+            entry.iceRestartTimer = null;
+            if (
+              this.peers.get(entry.userId) === entry &&
+              pc.iceConnectionState === 'disconnected' &&
+              typeof pc.restartIce === 'function'
+            ) {
+              pc.restartIce();
+            }
+          }, ICE_DISCONNECT_GRACE_MS);
+        }
+      } else {
+        this.clearIceRestartTimer(entry);
       }
       this.collectStats().catch(() => {});
     };
@@ -443,7 +518,16 @@ export class WebRtcMeshManager {
       this.peerCameraStreamIds.set(fromUserId, cameraStreamId);
     }
 
-    const entry = this.peers.get(fromUserId) ?? this.createPeer(fromUserId);
+    const incomingSession = sdpSessionId(description.sdp);
+    let existing = this.peers.get(fromUserId);
+    if (this.isFromRebuiltRemote(existing, incomingSession)) {
+      // The remote threw its RTCPeerConnection away (refresh button, ICE servers changed,
+      // page reload). Its new DTLS identity can't be renegotiated onto our old connection,
+      // which is what left calls stuck on "Bağlantı Koptu"; start fresh to match it.
+      this.closePeer(fromUserId);
+      existing = undefined;
+    }
+    const entry = existing ?? this.createPeer(fromUserId);
     if (entry.watchdogTimer !== null) {
       window.clearTimeout(entry.watchdogTimer);
       entry.watchdogTimer = null;
@@ -465,6 +549,7 @@ export class WebRtcMeshManager {
       }
 
       await pc.setRemoteDescription(description);
+      entry.remoteSdpSessionId = incomingSession ?? entry.remoteSdpSessionId;
       await this.flushPendingIce(entry);
 
       if (description.type === 'offer') {
@@ -493,10 +578,20 @@ export class WebRtcMeshManager {
   async handleAnswer(fromUserId: string, description: RTCSessionDescriptionInit) {
     const entry = this.peers.get(fromUserId);
     if (!entry) return;
+    const incomingSession = sdpSessionId(description.sdp);
+    if (this.isFromRebuiltRemote(entry, incomingSession)) {
+      // A rebuilt remote answered our old connection's offer: rebuild ours as well and
+      // offer straight away instead of waiting for the initiator/watchdog rules.
+      this.closePeer(fromUserId);
+      const fresh = this.createPeer(fromUserId);
+      this.offerNowIfIdle(fresh);
+      return;
+    }
     await this.enqueue(entry, async () => {
       if (entry.pc.signalingState !== 'have-local-offer') return;
       entry.hasNegotiated = true;
       await entry.pc.setRemoteDescription(description);
+      entry.remoteSdpSessionId = incomingSession ?? entry.remoteSdpSessionId;
       this.applyMicSenderPriority(entry);
       await this.flushPendingIce(entry);
 
@@ -706,6 +801,7 @@ export class WebRtcMeshManager {
       window.clearTimeout(entry.watchdogTimer);
       entry.watchdogTimer = null;
     }
+    this.clearIceRestartTimer(entry);
     entry.pc.onnegotiationneeded = null;
     entry.pc.onicecandidate = null;
     entry.pc.oniceconnectionstatechange = null;
