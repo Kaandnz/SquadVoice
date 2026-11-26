@@ -11,6 +11,8 @@ import {
 
 /** How long a 'disconnected' ICE state may last before we actively restart ICE. */
 const ICE_DISCONNECT_GRACE_MS = 4000;
+/** How long we wait for an answer before retracting our offer and sending it again. */
+const OFFER_ANSWER_TIMEOUT_MS = 8000;
 
 interface PeerEntry {
   userId: string;
@@ -21,6 +23,7 @@ interface PeerEntry {
   needsRenegotiation: boolean;
   watchdogTimer: number | null;
   iceRestartTimer: number | null;
+  offerTimer: number | null;
   /** SDP o= session id of the remote RTCPeerConnection we are negotiating with. */
   remoteSdpSessionId: string | null;
   queue: Promise<void>;
@@ -129,6 +132,40 @@ export class WebRtcMeshManager {
       window.clearTimeout(entry.iceRestartTimer);
       entry.iceRestartTimer = null;
     }
+  }
+
+  private clearOfferTimer(entry: PeerEntry) {
+    if (entry.offerTimer !== null) {
+      window.clearTimeout(entry.offerTimer);
+      entry.offerTimer = null;
+    }
+  }
+
+  /**
+   * If the answer to this offer never arrives (signal lost, remote reloaded before
+   * answering) we would sit in have-local-offer forever with no audio. Re-send the same
+   * pending offer: it is valid whether the remote missed it, already answered it (answer
+   * lost) or rebuilt its connection. Rolling back and re-offering is not: Chrome can
+   * reorder m-lines, which a remote that already applied the first offer rejects.
+   */
+  private armOfferTimeout(entry: PeerEntry) {
+    // Each new offer re-arms this and every applied answer clears it, so a timer that
+    // fires while still in have-local-offer always belongs to the unanswered offer.
+    this.clearOfferTimer(entry);
+    entry.offerTimer = window.setTimeout(() => {
+      entry.offerTimer = null;
+      if (this.peers.get(entry.userId) !== entry) return;
+      const { pc } = entry;
+      if (pc.signalingState !== 'have-local-offer' || !pc.localDescription) return;
+      console.warn('No answer from peer, re-sending offer:', entry.userId);
+      this.callbacks.sendOffer(
+        entry.userId,
+        sanitizeRtcPayload({ type: pc.localDescription.type, sdp: pc.localDescription.sdp }),
+        this.localScreenStream?.id ?? null,
+        this.localCameraStream?.id ?? null,
+      );
+      this.armOfferTimeout(entry);
+    }, OFFER_ANSWER_TIMEOUT_MS);
   }
 
   updateAudioSettings(audioSettings: AudioSettings) {
@@ -332,6 +369,7 @@ export class WebRtcMeshManager {
       this.ensureBidirectionalAudio(entry);
       const offer = await pc.createOffer();
       await this.setLocalWithOpusFallback(pc, offer);
+      this.armOfferTimeout(entry);
       if (pc.localDescription) {
         this.callbacks.sendOffer(
           entry.userId,
@@ -365,6 +403,7 @@ export class WebRtcMeshManager {
       needsRenegotiation: false,
       watchdogTimer: null,
       iceRestartTimer: null,
+      offerTimer: null,
       remoteSdpSessionId: null,
       queue: Promise.resolve(),
       makingOffer: false,
@@ -591,6 +630,7 @@ export class WebRtcMeshManager {
       if (entry.pc.signalingState !== 'have-local-offer') return;
       entry.hasNegotiated = true;
       await entry.pc.setRemoteDescription(description);
+      this.clearOfferTimer(entry);
       entry.remoteSdpSessionId = incomingSession ?? entry.remoteSdpSessionId;
       this.applyMicSenderPriority(entry);
       await this.flushPendingIce(entry);
@@ -802,6 +842,7 @@ export class WebRtcMeshManager {
       entry.watchdogTimer = null;
     }
     this.clearIceRestartTimer(entry);
+    this.clearOfferTimer(entry);
     entry.pc.onnegotiationneeded = null;
     entry.pc.onicecandidate = null;
     entry.pc.oniceconnectionstatechange = null;

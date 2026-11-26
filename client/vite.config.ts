@@ -1,9 +1,14 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  test: {
+    // Playwright owns e2e/; vitest runs the unit tests only
+    include: ['src/**/*.test.{ts,tsx}'],
+  },
   server: {
     port: 1420,
     strictPort: true,

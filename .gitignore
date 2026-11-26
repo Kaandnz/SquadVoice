@@ -9,6 +9,8 @@ client/node_modules
 client/dist
 client/.env
 client/.env.local
+client/test-results
+client/playwright-report
 
 # Firebase
 .firebase/
