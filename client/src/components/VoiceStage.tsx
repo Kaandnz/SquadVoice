@@ -92,6 +92,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     remoteCameraStreams,
     focusedStreamUserId,
     turnEnabled,
+    wsStatus,
     lastSoundboard,
     selectTextChannel,
     toggleMute,
@@ -601,6 +602,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
           </div>
         )}
       </div>
+
+      {firebaseMode && wsStatus !== 'connected' && (
+        <div className="audio-unlock-banner" role="status">
+          <span>
+            İnternet bağlantısı koptu, yeniden bağlanılıyor… Odadan çıkarılmayacaksın; bağlantı
+            gelince ses kendiliğinden devam eder.
+          </span>
+        </div>
+      )}
 
       {needsAudioUnlock && (
         <div className="audio-unlock-banner">

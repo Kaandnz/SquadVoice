@@ -716,6 +716,11 @@ async function initializeFirebaseSession(user: PublicUser) {
           }
           return;
         }
+        if (!myEntry && firebaseBackend.isVoiceRestorePending(st.user.id)) {
+          // Our socket dropped and the server cleaned up the entry; firebaseBackend
+          // re-creates it as soon as we're back online, so stay in the room meanwhile.
+          return;
+        }
         if (!myEntry) {
           const prevVoiceId = st.activeVoiceChannelId;
           const shouldReturnToText =
