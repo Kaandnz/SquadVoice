@@ -795,8 +795,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
 
           const iceConnected =
             stats?.iceState === 'connected' || stats?.iceState === 'completed';
-          const iceFailed =
-            stats?.iceState === 'failed' || stats?.iceState === 'disconnected';
+          const iceFailed = stats?.iceState === 'failed';
+          // 'disconnected' is usually a short blip that ICE heals (or we restart it)
+          const iceReconnecting = stats?.iceState === 'disconnected';
 
           const pingClass = iceFailed
             ? 'bad'
@@ -817,7 +818,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
               ? turnEnabled
                 ? 'Bağlantı Koptu'
                 : 'Bağlanamadı (TURN Gerekli)'
-              : !iceConnected
+              : iceReconnecting
+                ? 'Yeniden bağlanıyor...'
+                : !iceConnected
                 ? 'El sıkışıyor...'
                 : `${stats.rttMs !== null ? `${stats.rttMs} ms` : 'Bağlı'}${audioOk ? ' • Ses Aktif' : ''}${stats.usingRelay ? ' • TURN' : ''}`;
 

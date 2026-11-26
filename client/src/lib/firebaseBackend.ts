@@ -688,10 +688,18 @@ export const firebaseBackend = {
 
     unsubs.push(
       onValue(ref(rtdb, 'voice'), (snap) => {
-        const raw = (snap.val() as Record<string, VoiceMemberState> | null) || {};
-        const list = Object.values(raw).sort((a, b) =>
-          a.username.localeCompare(b.username),
-        );
+        const raw = (snap.val() as Record<string, Partial<VoiceMemberState>> | null) || {};
+        // A late update() after the entry was removed recreates it as a stub like
+        // { speaking: false }; without this filter the sort below threw and froze
+        // voice state for everyone.
+        const list = Object.values(raw)
+          .filter(
+            (m): m is VoiceMemberState =>
+              typeof m?.user_id === 'string' &&
+              typeof m.channel_id === 'string' &&
+              typeof m.username === 'string',
+          )
+          .sort((a, b) => a.username.localeCompare(b.username));
         callbacks.onVoiceMembers(list);
       }),
     );
@@ -901,6 +909,9 @@ export const firebaseBackend = {
       >
     >,
   ): Promise<void> {
+    // update() on a removed entry would recreate it as a stub, e.g. the speaking:false
+    // that fires while tearing down after a disconnect. Only the voice session writes.
+    if (voiceOwnerUid !== userId) return;
     const { rtdb } = getFirebaseServices();
     await update(ref(rtdb, `voice/${userId}`), sanitizeRtcPayload(patch));
   },

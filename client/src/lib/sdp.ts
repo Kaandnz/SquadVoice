@@ -22,6 +22,16 @@ export function isInitiatorPeer(myUserId: string, remoteUserId: string): boolean
 }
 
 /**
+ * Returns the SDP origin (o=) session id. It is random per RTCPeerConnection and stays
+ * the same across renegotiations of that connection, so a different value means the
+ * remote side threw its connection away and built a new one.
+ */
+export function sdpSessionId(sdp: string | undefined | null): string | null {
+  const match = sdp?.match(/^o=\S+\s+(\d+)\s/m);
+  return match ? match[1] : null;
+}
+
+/**
  * Strips undefined values recursively so signaling payloads never fail
  * Firebase Realtime Database serialization.
  */

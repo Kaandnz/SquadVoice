@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { isInitiatorPeer, isPolitePeer, sanitizeRtcPayload, tuneOpusSdp } from './sdp';
+import {
+  isInitiatorPeer,
+  isPolitePeer,
+  sanitizeRtcPayload,
+  sdpSessionId,
+  tuneOpusSdp,
+} from './sdp';
+
+describe('sdpSessionId', () => {
+  it('reads the origin session id regardless of version and line endings', () => {
+    const sdp = ['v=0', 'o=- 4611731400430051336 2 IN IP4 127.0.0.1', 's=-'].join('\r\n');
+    expect(sdpSessionId(sdp)).toBe('4611731400430051336');
+    expect(sdpSessionId(sdp.replace(' 2 IN', ' 7 IN'))).toBe('4611731400430051336');
+    expect(sdpSessionId(sdp.split('\r\n').join('\n'))).toBe('4611731400430051336');
+  });
+
+  it('returns null when there is no origin line', () => {
+    expect(sdpSessionId('v=0\r\ns=-')).toBeNull();
+    expect(sdpSessionId(undefined)).toBeNull();
+  });
+});
 
 describe('isPolitePeer & isInitiatorPeer', () => {
   it('is deterministic and asymmetric for any two distinct IDs', () => {
