@@ -172,6 +172,27 @@ test.describe('voice call between two peers', () => {
     expect(await bob.evaluate(() => window.sv.pcId('alice'))).toBe(bobPcBefore);
   });
 
+  test('a stray second session of the same peer does not cause a reconnect storm', async ({
+    context,
+  }, info) => {
+    // Alice has the app open twice (e.g. an old tab that wasn't refreshed). Bob offers
+    // ('bob' > 'alice') and BOTH Alice tabs answer from different connections. Bob must
+    // settle on one instead of rebuilding in a loop, which users saw as
+    // "El sıkışıyor… / Bağlanıyor…" flipping and the screen flickering.
+    const alice = await openPeer(context, 'alice', info.testId);
+    const aliceStale = await openPeer(context, 'alice', info.testId);
+    const bob = await openPeer(context, 'bob', info.testId);
+    await Promise.all([start(alice, ['bob']), start(aliceStale, ['bob']), start(bob, ['alice'])]);
+
+    const seen = new Set<number | null>();
+    for (let i = 0; i < 16; i += 1) {
+      seen.add(await bob.evaluate(() => window.sv.pcId('alice')));
+      await bob.waitForTimeout(1000);
+    }
+    expect(seen.size, `Bob rebuilt his connection ${seen.size - 1} times`).toBeLessThanOrEqual(2);
+    await expectConnected(bob, 'alice');
+  });
+
   test('recovers when an answer is lost in signaling', async ({ context }, info) => {
     const { alice, bob } = await setupCall(context, info.testId);
     // 'bob' > 'alice', so Bob offers first; lose Alice's answer to it

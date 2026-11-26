@@ -325,6 +325,18 @@ describe('sessions of the same account', () => {
     expect(cb.onRtcSignal).toHaveBeenCalledWith(signal);
   });
 
+  it('tags outgoing signals with this session so receivers can ignore other tabs', async () => {
+    const backend = await loadBackend();
+    await backend.sendRtcSignal('uid-friend', {
+      kind: 'ice',
+      from_user_id: USER.id,
+      candidate: { candidate: 'x' },
+    });
+    expect(writesTo('signals/uid-friend/pushed', 'set').at(-1)?.value).toMatchObject({
+      session_id: backend.sessionId(),
+    });
+  });
+
   it('re-writes shared presence that another session removed, at most every 5s', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date('2026-11-26T20:00:00Z'));

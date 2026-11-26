@@ -16,6 +16,8 @@ const OFFER_ANSWER_TIMEOUT_MS = 8000;
 const OFFER_ANSWER_TIMEOUT_MAX_MS = 60_000;
 /** Shortest window used for bitrate / packet-loss figures. */
 const MIN_STATS_WINDOW_MS = 1500;
+/** At most one "remote rebuilt, rebuild ours" per peer in this window. */
+const REBUILD_COOLDOWN_MS = 5000;
 
 interface PeerEntry {
   userId: string;
@@ -80,6 +82,7 @@ export class WebRtcMeshManager {
   private statsTimer: number | null = null;
   private statsInFlight = false;
   private statsRerunRequested = false;
+  private lastRebuildAt = new Map<string, number>();
 
   private audioEngine: AudioEngine;
   private callbacks: MeshCallbacks;
@@ -124,6 +127,20 @@ export class WebRtcMeshManager {
         entry.remoteSdpSessionId &&
         entry.remoteSdpSessionId !== incomingSession,
     );
+  }
+
+  /**
+   * Circuit breaker for "the remote rebuilt, so rebuild ours". If two different
+   * connections answer for the same person (an old tab still open), each rebuild
+   * provokes the next one; users saw that as "El sıkışıyor…/Bağlanıyor…" flipping.
+   * A genuinely rebuilt remote re-sends its offer, so a skipped one is retried later.
+   */
+  private takeRebuildToken(userId: string): boolean {
+    const now = performance.now();
+    const last = this.lastRebuildAt.get(userId);
+    if (last !== undefined && now - last < REBUILD_COOLDOWN_MS) return false;
+    this.lastRebuildAt.set(userId, now);
+    return true;
   }
 
   /** Sends a fresh offer right away (skipping the initiator rule) if nothing was negotiated yet. */
@@ -584,6 +601,10 @@ export class WebRtcMeshManager {
     const incomingSession = sdpSessionId(description.sdp);
     let existing = this.peers.get(fromUserId);
     if (this.isFromRebuiltRemote(existing, incomingSession)) {
+      if (!this.takeRebuildToken(fromUserId)) {
+        console.warn('Ignoring offer from another connection of peer (cooldown):', fromUserId);
+        return;
+      }
       // The remote threw its RTCPeerConnection away (refresh button, ICE servers changed,
       // page reload). Its new DTLS identity can't be renegotiated onto our old connection,
       // which is what left calls stuck on "Bağlantı Koptu"; start fresh to match it.
@@ -643,6 +664,12 @@ export class WebRtcMeshManager {
     if (!entry) return;
     const incomingSession = sdpSessionId(description.sdp);
     if (this.isFromRebuiltRemote(entry, incomingSession)) {
+      // Only an answer to an offer we're still waiting on can mean "the remote rebuilt".
+      // Anything else is a stray duplicate (a second tab of that person answering too).
+      if (entry.pc.signalingState !== 'have-local-offer' || !this.takeRebuildToken(fromUserId)) {
+        console.warn('Ignoring answer from another connection of peer:', fromUserId);
+        return;
+      }
       // A rebuilt remote answered our old connection's offer: rebuild ours as well and
       // offer straight away instead of waiting for the initiator/watchdog rules.
       this.closePeer(fromUserId);

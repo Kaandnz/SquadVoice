@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import type { VoiceMemberState } from '../types/protocol';
-import { classifyOwnVoiceEntry, findCallOnOtherDevice } from './voiceSession';
+import {
+  classifyOwnVoiceEntry,
+  findCallOnOtherDevice,
+  isSignalFromVoiceSession,
+} from './voiceSession';
+
+describe('isSignalFromVoiceSession', () => {
+  it('accepts signals from the session holding the voice entry', () => {
+    expect(isSignalFromVoiceSession({ session_id: 'tab-a' }, 'tab-a')).toBe(true);
+  });
+
+  it('drops signals from another tab of that person, including old untagged ones', () => {
+    expect(isSignalFromVoiceSession({ session_id: 'tab-a' }, 'old-tab')).toBe(false);
+    expect(isSignalFromVoiceSession({ session_id: 'tab-a' }, undefined)).toBe(false);
+  });
+
+  it('accepts when the owner is unknown (older app in voice, entry not seen yet)', () => {
+    expect(isSignalFromVoiceSession({ session_id: undefined }, 'x')).toBe(true);
+    expect(isSignalFromVoiceSession(undefined, undefined)).toBe(true);
+  });
+});
 
 function entry(patch: Partial<VoiceMemberState> = {}): VoiceMemberState {
   const base: VoiceMemberState = {

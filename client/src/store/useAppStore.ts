@@ -25,7 +25,7 @@ import {
 } from '../lib/chatHistory';
 import { appendSample, sampleFromStats, type QualitySample } from '../lib/connectionQuality';
 import { shouldReacquireMic } from '../lib/micDevices';
-import { classifyOwnVoiceEntry } from '../lib/voiceSession';
+import { classifyOwnVoiceEntry, isSignalFromVoiceSession } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
 import { SquadWsClient } from '../lib/ws';
 import type {
@@ -909,6 +909,13 @@ async function initializeFirebaseSession(user: PublicUser) {
       }
     },
     onRtcSignal: (signal) => {
+      const sender = useAppStore
+        .getState()
+        .voiceMembers.find((m) => m.user_id === signal.from_user_id);
+      if (!isSignalFromVoiceSession(sender, signal.session_id)) {
+        // Another tab/device of that person (not the one in voice) is answering too
+        return;
+      }
       if (signal.kind === 'offer') {
         rtcMesh
           ?.handleOffer(

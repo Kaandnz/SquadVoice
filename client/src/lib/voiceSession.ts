@@ -25,6 +25,22 @@ export function classifyOwnVoiceEntry(input: {
 }
 
 /**
+ * A WebRTC signal should only be acted on if it comes from the tab/device that holds the
+ * sender's voice entry. Another open tab of that person (typically an old version that
+ * wasn't refreshed) would otherwise answer too, and two different connections answering
+ * for one person made calls flip between "El sıkışıyor…" and "Bağlanıyor…".
+ * Unknown on either side (older app versions, entry not seen yet) → accept.
+ */
+export function isSignalFromVoiceSession(
+  senderVoiceEntry: Pick<VoiceMemberState, 'session_id'> | undefined,
+  signalSessionId: string | undefined,
+): boolean {
+  const owner = senderVoiceEntry?.session_id;
+  if (!owner) return true;
+  return signalSessionId === owner;
+}
+
+/**
  * The account is in a voice room on some other device/tab while this one is not,
  * so we can offer to move the call here.
  */

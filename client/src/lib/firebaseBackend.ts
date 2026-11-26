@@ -131,16 +131,20 @@ export type RtcSignalPayload =
       sdp: RTCSessionDescriptionInit;
       screen_stream_id?: string | null;
       camera_stream_id?: string | null;
+      /** Sending tab/device (added by sendRtcSignal); absent from older app versions. */
+      session_id?: string;
     }
   | {
       kind: 'answer';
       from_user_id: string;
       sdp: RTCSessionDescriptionInit;
+      session_id?: string;
     }
   | {
       kind: 'ice';
       from_user_id: string;
       candidate: RTCIceCandidateInit;
+      session_id?: string;
     };
 
 export interface RealtimeCallbacks {
@@ -1096,7 +1100,8 @@ export const firebaseBackend = {
     const { rtdb } = getFirebaseServices();
     const sigRef = push(ref(rtdb, `signals/${targetUserId}`));
     try {
-      await set(sigRef, sanitizeRtcPayload(payload));
+      // Lets the receiver ignore signals from our other tabs/devices that aren't in voice
+      await set(sigRef, sanitizeRtcPayload({ ...payload, session_id: SESSION_ID }));
     } catch (err) {
       console.warn('WebRTC signal send failed:', err);
     }
