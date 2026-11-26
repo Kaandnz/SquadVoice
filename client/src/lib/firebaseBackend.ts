@@ -684,9 +684,22 @@ export const firebaseBackend = {
         voiceRestorePending = false;
         return;
       }
-      set(voiceRef, sanitizeRtcPayload({ ...cached, speaking: false, kicked_by_admin: false }))
-        .then(() => {
-          if (voiceOwnerUid === user.id) voiceRestorePending = false;
+      get(voiceRef)
+        .then((snap) => {
+          const current = snap.val() as Partial<VoiceMemberState> | null;
+          if (isVoiceMember(current) && current.session_id && current.session_id !== SESSION_ID) {
+            // Another device took the call over while we were offline; don't clobber it.
+            // The store sees that device's entry and leaves as 'taken-over'.
+            firebaseBackend.releaseVoiceOwnership(user.id);
+            return;
+          }
+          if (voiceOwnerUid !== user.id) return; // left voice meanwhile
+          return set(
+            voiceRef,
+            sanitizeRtcPayload({ ...cached, speaking: false, kicked_by_admin: false }),
+          ).then(() => {
+            if (voiceOwnerUid === user.id) voiceRestorePending = false;
+          });
         })
         .catch(() => {
           // e.g. removed from the server meanwhile: give the entry up so the store leaves

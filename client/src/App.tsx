@@ -4,6 +4,7 @@ import { AdminPanelModal } from './components/AdminPanelModal';
 import { AuthScreen } from './components/AuthScreen';
 import { ChatPanel } from './components/ChatPanel';
 import { MemberList } from './components/MemberList';
+import { OtherDeviceCallBanner } from './components/OtherDeviceCallBanner';
 import { ProfileModal } from './components/ProfileModal';
 import { ScreenShareModal } from './components/ScreenShareModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -94,6 +95,7 @@ export function App() {
           </div>
         )}
 
+        <OtherDeviceCallBanner />
         <VoiceStage onOpenShareModal={() => setShareModalOpen(true)} />
 
         <div className="chat-and-members">

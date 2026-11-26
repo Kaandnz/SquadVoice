@@ -14,6 +14,7 @@ import {
   saveServerUrl,
 } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
+import { classifyOwnVoiceEntry } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
 import { SquadWsClient } from '../lib/ws';
 import type {
@@ -366,6 +367,35 @@ function ensureEngines() {
   }
 }
 
+/** Tears down this device's call state and returns to a text channel if needed. */
+function leaveVoiceLocally(toast: string | null) {
+  const st = useAppStore.getState();
+  const prevVoiceId = st.activeVoiceChannelId;
+  const shouldReturnToText = !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
+  rtcMesh?.closeAll();
+  audioEngine?.destroyAll();
+  subscribeFirebaseSoundboard(null);
+  prevVoicePeerIds.clear();
+  useAppStore.setState({
+    activeVoiceChannelId: null,
+    forceMuted: false,
+    speaking: false,
+    localScreenStream: null,
+    localCameraStream: null,
+    remoteScreenStreams: {},
+    remoteCameraStreams: {},
+    focusedStreamUserId: null,
+    peerStats: {},
+    toastError: toast,
+  });
+  if (shouldReturnToText) {
+    const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
+    if (fallbackId) {
+      useAppStore.getState().selectTextChannel(fallbackId);
+    }
+  }
+}
+
 function syncMicTransmission() {
   const s = useAppStore.getState();
   const transmit =
@@ -686,68 +716,33 @@ async function initializeFirebaseSession(user: PublicUser) {
 
       const st = useAppStore.getState();
       if (st.activeVoiceChannelId && st.user) {
-        const myEntry = rawVoiceMembers.find((m) => m.user_id === st.user!.id);
-        if (myEntry?.kicked_by_admin) {
-          const prevVoiceId = st.activeVoiceChannelId;
-          const shouldReturnToText =
-            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
-          rtcMesh?.closeAll();
-          audioEngine?.destroyAll();
-          subscribeFirebaseSoundboard(null);
-          prevVoicePeerIds.clear();
-          useAppStore.setState({
-            activeVoiceChannelId: null,
-            forceMuted: false,
-            speaking: false,
-            localScreenStream: null,
-            localCameraStream: null,
-            remoteScreenStreams: {},
-            remoteCameraStreams: {},
-            focusedStreamUserId: null,
-            peerStats: {},
-            toastError: 'Yönetici tarafından ses odasından çıkarıldın.',
-          });
-          firebaseBackend.leaveVoice(st.user.id).catch(() => {});
-          if (shouldReturnToText) {
-            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
-            if (fallbackId) {
-              useAppStore.getState().selectTextChannel(fallbackId);
-            }
-          }
-          return;
-        }
-        if (!myEntry && firebaseBackend.isVoiceRestorePending(st.user.id)) {
+        const userId = st.user.id;
+        const myEntry = rawVoiceMembers.find((m) => m.user_id === userId);
+        const status = classifyOwnVoiceEntry({
+          myEntry,
+          mySessionId: firebaseBackend.sessionId(),
+          restorePending: firebaseBackend.isVoiceRestorePending(userId),
+        });
+
+        if (status === 'restoring') {
           // Our socket dropped and the server cleaned up the entry; firebaseBackend
           // re-creates it as soon as we're back online, so stay in the room meanwhile.
           return;
         }
-        if (!myEntry) {
-          const prevVoiceId = st.activeVoiceChannelId;
-          const shouldReturnToText =
-            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
-          firebaseBackend.releaseVoiceOwnership(st.user.id);
-          rtcMesh?.closeAll();
-          audioEngine?.destroyAll();
-          subscribeFirebaseSoundboard(null);
-          prevVoicePeerIds.clear();
-          useAppStore.setState({
-            activeVoiceChannelId: null,
-            forceMuted: false,
-            speaking: false,
-            localScreenStream: null,
-            localCameraStream: null,
-            remoteScreenStreams: {},
-            remoteCameraStreams: {},
-            focusedStreamUserId: null,
-            peerStats: {},
-            toastError: selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.',
-          });
-          if (shouldReturnToText) {
-            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
-            if (fallbackId) {
-              useAppStore.getState().selectTextChannel(fallbackId);
-            }
-          }
+        if (status === 'kicked') {
+          leaveVoiceLocally('Yönetici tarafından ses odasından çıkarıldın.');
+          firebaseBackend.leaveVoice(userId).catch(() => {});
+          return;
+        }
+        if (status === 'taken-over') {
+          // Another device of this account joined: hand the entry over untouched
+          firebaseBackend.releaseVoiceOwnership(userId);
+          leaveVoiceLocally('Görüşme başka bir cihazına aktarıldı.');
+          return;
+        }
+        if (status === 'gone' || !myEntry) {
+          firebaseBackend.releaseVoiceOwnership(userId);
+          leaveVoiceLocally(selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.');
           return;
         }
 

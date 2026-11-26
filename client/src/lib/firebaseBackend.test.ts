@@ -10,6 +10,7 @@ const db = vi.hoisted(() => ({
   writes: [] as Write[],
   disconnectOps: [] as Array<{ op: 'remove' | 'cancel'; path: string }>,
   rejectSetFor: null as string | null,
+  serverValues: new Map<string, unknown>(),
 }));
 
 vi.mock('firebase/database', () => {
@@ -42,7 +43,10 @@ vi.mock('firebase/database', () => {
     remove: async (r: { path: string }) => {
       db.writes.push({ op: 'remove', path: r.path });
     },
-    get: async () => ({ exists: () => false, val: () => null }),
+    get: async (r: { path: string }) => {
+      const value = db.serverValues.get(r.path) ?? null;
+      return { exists: () => value !== null, val: () => value };
+    },
     push: (r: { path: string }) => ({ path: `${r.path}/pushed`, key: 'pushed' }),
     query: (r: unknown) => r,
     orderByChild: () => ({}),
@@ -129,6 +133,7 @@ beforeEach(() => {
   db.writes.length = 0;
   db.disconnectOps.length = 0;
   db.rejectSetFor = null;
+  db.serverValues.clear();
 });
 
 afterEach(() => {
@@ -212,6 +217,24 @@ describe('voice entry restore after a connection drop', () => {
 
     expect(backend.ownsVoice(USER.id)).toBe(false);
     expect(backend.isVoiceRestorePending(USER.id)).toBe(false);
+  });
+
+  it('does not clobber a call another device took over while we were offline', async () => {
+    const backend = await loadBackend();
+    backend.startRealtimeSession(USER, callbacks());
+    emit('.info/connected', true);
+    await backend.joinVoice(USER, 'ch-1', VOICE_STATE);
+    const ours = writesTo('voice/uid-me', 'set').at(-1)?.value as VoiceMemberState;
+    const setsBefore = writesTo('voice/uid-me', 'set').length;
+
+    emit('.info/connected', false);
+    db.serverValues.set('voice/uid-me', { ...ours, session_id: 'phone-session' });
+    emit('.info/connected', true);
+    await flush();
+
+    expect(writesTo('voice/uid-me', 'set')).toHaveLength(setsBefore);
+    expect(backend.ownsVoice(USER.id)).toBe(false);
+    expect(db.disconnectOps).toContainEqual({ op: 'cancel', path: 'voice/uid-me' });
   });
 
   it('stops restoring after leaving voice', async () => {
