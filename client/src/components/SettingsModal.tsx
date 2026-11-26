@@ -121,13 +121,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
           <div className="stack-field">
             <div className="row-between">
-              <span>
-                Mikrofon Hassasiyeti (Ses Kapısı:{' '}
-                {audioSettings.vadThreshold === 0
-                  ? 'Kapalı (Hep Açık)'
-                  : audioSettings.vadThreshold}
-                )
-              </span>
+              <span>Mikrofon Hassasiyeti (Konuşma Göstergesi: {audioSettings.vadThreshold})</span>
               <span className="muted-text">Canlı Seviye: {micLevel}%</span>
             </div>
             <div className="mic-meter-track">
@@ -136,9 +130,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 style={{
                   width: `${micLevel}%`,
                   backgroundColor:
-                    audioSettings.vadThreshold === 0 || micLevel >= audioSettings.vadThreshold
-                      ? '#3BA55D'
-                      : '#72767D',
+                    micLevel >= audioSettings.vadThreshold ? '#3BA55D' : '#72767D',
                 }}
               />
               <div
@@ -148,7 +140,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </div>
             <input
               type="range"
-              min={0}
+              min={2}
               max={60}
               value={audioSettings.vadThreshold}
               onChange={(e) =>
@@ -156,7 +148,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               }
             />
             <span className="muted-text" style={{ fontSize: '0.75rem' }}>
-              Eşiğin altındaki cızırtı, fan ve klavye sesi otomatik kesilir (0 = kapı kapalı).
+              Sadece yeşil konuşma göstergesini ayarlar; sesini kesmez.
             </span>
           </div>
 
@@ -192,7 +184,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <label className="toggle-row">
               <div>
                 <strong>Gürültü Azaltma (Noise Suppression)</strong>
-                <p>Cızırtı filtresi (8.5 kHz), dip gürültü ve klavye/fan sesini bastırır.</p>
+                <p>Klavye, fan ve arka plan gürültüsünü tarayıcı/sistem düzeyinde bastırır.</p>
               </div>
               <input
                 type="checkbox"
@@ -275,6 +267,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               />
             </label>
           </div>
+
+          <button
+            type="button"
+            className="secondary-btn small"
+            style={{ alignSelf: 'flex-start' }}
+            onClick={() =>
+              updateAudioSettings({
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                opusBitrateKbps: 96,
+                stereo: false,
+                vadThreshold: 14,
+              })
+            }
+          >
+            Önerilen Temiz Ses Ayarlarını Uygula
+          </button>
 
           {audioSettings.pttEnabled && (
             <div className="ptt-bind-row">

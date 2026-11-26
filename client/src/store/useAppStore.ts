@@ -1690,9 +1690,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ audioSettings: next });
     rtcMesh?.updateAudioSettings(next);
     audioEngine?.setVadThreshold(next.vadThreshold);
-    audioEngine?.setGateBypassed(
-      Boolean(next.pttEnabled || next.stereo || next.vadThreshold <= 0),
-    );
 
     if (patch.pttEnabled !== undefined || patch.pttKey !== undefined) {
       setupPttBinding(next);
