@@ -121,7 +121,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
           <div className="stack-field">
             <div className="row-between">
-              <span>Mikrofon Hassasiyeti (Ses Algılama Eşiği: {audioSettings.vadThreshold})</span>
+              <span>
+                Mikrofon Hassasiyeti (Ses Kapısı:{' '}
+                {audioSettings.vadThreshold === 0
+                  ? 'Kapalı (Hep Açık)'
+                  : audioSettings.vadThreshold}
+                )
+              </span>
               <span className="muted-text">Canlı Seviye: {micLevel}%</span>
             </div>
             <div className="mic-meter-track">
@@ -130,7 +136,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 style={{
                   width: `${micLevel}%`,
                   backgroundColor:
-                    micLevel >= audioSettings.vadThreshold ? '#3BA55D' : '#72767D',
+                    audioSettings.vadThreshold === 0 || micLevel >= audioSettings.vadThreshold
+                      ? '#3BA55D'
+                      : '#72767D',
                 }}
               />
               <div
@@ -140,13 +148,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </div>
             <input
               type="range"
-              min={2}
+              min={0}
               max={60}
               value={audioSettings.vadThreshold}
               onChange={(e) =>
                 updateAudioSettings({ vadThreshold: Number(e.target.value) })
               }
             />
+            <span className="muted-text" style={{ fontSize: '0.75rem' }}>
+              Eşiğin altındaki cızırtı, fan ve klavye sesi otomatik kesilir (0 = kapı kapalı).
+            </span>
           </div>
 
           <div className="field-label">Opus Ses Kalitesi</div>
@@ -181,7 +192,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <label className="toggle-row">
               <div>
                 <strong>Gürültü Azaltma (Noise Suppression)</strong>
-                <p>Klavye ve fan gürültüsünü filtreler.</p>
+                <p>Cızırtı filtresi (8.5 kHz), dip gürültü ve klavye/fan sesini bastırır.</p>
               </div>
               <input
                 type="checkbox"

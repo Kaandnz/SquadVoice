@@ -1,4 +1,5 @@
 import type { AudioSettings } from '../types/protocol';
+import { computeRmsLevel, evaluateNoiseGate, type GateState } from './audioGate';
 
 const IS_MOBILE =
   typeof navigator !== 'undefined' &&
@@ -15,11 +16,18 @@ interface RemotePeerAudio {
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private hostContainer: HTMLDivElement | null = null;
+  private rawMicStream: MediaStream | null = null;
   private micStream: MediaStream | null = null;
   private vadSource: MediaStreamAudioSourceNode | null = null;
+  private hpFilter: BiquadFilterNode | null = null;
+  private lpFilter: BiquadFilterNode | null = null;
+  private compressor: DynamicsCompressorNode | null = null;
+  private gateGain: GainNode | null = null;
   private vadAnalyser: AnalyserNode | null = null;
   private vadTimer: number | null = null;
-  private hangoverUntil = 0;
+  private gateState: GateState = { open: false, hangoverUntil: 0 };
+  private gateBypassed = false;
+  private micTransmissionEnabled = true;
   private currentlySpeaking = false;
   private deafened = false;
   private outputDeviceId = 'default';
@@ -31,7 +39,7 @@ export class AudioEngine {
   private onMicLevel: (level: number) => void;
   private onAutoplayBlocked: (blocked: boolean) => void;
 
-  private vadThreshold = 14; // 0..100
+  private vadThreshold = 14; // 0..95 (0 = gate off)
 
   constructor(callbacks: {
     onSpeakingChange: (speaking: boolean) => void;
@@ -48,7 +56,12 @@ export class AudioEngine {
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AudioCtx({ latencyHint: 'interactive' });
+      try {
+        // Balanced latency prevents Bluetooth / CPU buffer-underrun crackling
+        this.ctx = new AudioCtx({ latencyHint: 'balanced' });
+      } catch {
+        this.ctx = new AudioCtx();
+      }
     }
     return this.ctx;
   }
@@ -129,7 +142,17 @@ export class AudioEngine {
   }
 
   setVadThreshold(threshold: number) {
-    this.vadThreshold = Math.max(1, Math.min(95, threshold));
+    this.vadThreshold = Math.max(0, Math.min(95, threshold));
+    if (this.vadThreshold === 0 && this.gateGain && this.ctx) {
+      this.gateGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.015);
+    }
+  }
+
+  setGateBypassed(bypassed: boolean) {
+    this.gateBypassed = bypassed;
+    if (bypassed && this.gateGain && this.ctx) {
+      this.gateGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.015);
+    }
   }
 
   async acquireMic(
@@ -138,6 +161,7 @@ export class AudioEngine {
   ): Promise<MediaStream> {
     this.stopMic();
     this.setVadThreshold(settings.vadThreshold);
+    this.gateBypassed = Boolean(settings.pttEnabled || settings.stereo || settings.vadThreshold <= 0);
 
     if (options?.settleMs && options.settleMs > 0) {
       await new Promise((r) => window.setTimeout(r, options.settleMs));
@@ -166,46 +190,62 @@ export class AudioEngine {
     }
     attempts.push(baseProcessing, true);
 
-    let stream: MediaStream | null = null;
+    let rawStream: MediaStream | null = null;
     let lastError: unknown = null;
     for (const audio of attempts) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
+        rawStream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
         break;
       } catch (err) {
         lastError = err;
       }
     }
-    if (!stream) {
+    if (!rawStream) {
       throw lastError instanceof Error ? lastError : new Error('Mikrofon açılamadı');
     }
 
-    this.micStream = stream;
-    this.setupVad(stream);
+    this.rawMicStream = rawStream;
+    this.micStream = this.setupMicDsp(rawStream, settings);
+    this.setMicEnabled(this.micTransmissionEnabled);
     if (settings.outputDeviceId) {
       this.setOutputDevice(settings.outputDeviceId).catch(() => {});
     }
-    return stream;
+    return this.micStream;
   }
 
   async applyAudioConstraints(
     settings: AudioSettings,
   ): Promise<{ stream: MediaStream; replaced: boolean }> {
     this.setVadThreshold(settings.vadThreshold);
-    const track = this.micStream?.getAudioTracks()[0];
+    this.setGateBypassed(
+      Boolean(settings.pttEnabled || settings.stereo || settings.vadThreshold <= 0),
+    );
+
+    if (this.hpFilter) {
+      this.hpFilter.frequency.value = settings.stereo ? 20 : 85;
+    }
+    if (this.lpFilter) {
+      this.lpFilter.frequency.value = !settings.stereo && settings.noiseSuppression ? 8500 : 20000;
+    }
+
+    const rawTrack = this.rawMicStream?.getAudioTracks()[0];
+    const processedTrack = this.micStream?.getAudioTracks()[0];
     if (
+      this.rawMicStream &&
       this.micStream &&
-      track &&
-      track.readyState === 'live' &&
-      typeof track.applyConstraints === 'function'
+      rawTrack &&
+      rawTrack.readyState === 'live' &&
+      processedTrack &&
+      processedTrack.readyState === 'live' &&
+      typeof rawTrack.applyConstraints === 'function'
     ) {
       try {
-        await track.applyConstraints({
+        await rawTrack.applyConstraints({
           echoCancellation: settings.echoCancellation,
           noiseSuppression: settings.noiseSuppression,
           autoGainControl: settings.autoGainControl,
         });
-        if (track.readyState === 'live') {
+        if (rawTrack.readyState === 'live') {
           return { stream: this.micStream, replaced: false };
         }
       } catch {
@@ -217,50 +257,106 @@ export class AudioEngine {
     return { stream, replaced: true };
   }
 
-  private setupVad(stream: MediaStream) {
+  private setupMicDsp(rawStream: MediaStream, settings: AudioSettings): MediaStream {
     try {
       const ctx = this.ensureContext();
       if (ctx.state === 'suspended') {
         ctx.resume().catch(() => {});
       }
-      this.vadSource = ctx.createMediaStreamSource(stream);
-      this.vadAnalyser = ctx.createAnalyser();
-      this.vadAnalyser.fftSize = 512;
-      this.vadSource.connect(this.vadAnalyser);
 
-      const buf = new Float32Array(this.vadAnalyser.fftSize);
+      const source = ctx.createMediaStreamSource(rawStream);
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = settings.stereo ? 20 : 85;
+      hp.Q.value = 0.7;
+
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = !settings.stereo && settings.noiseSuppression ? 8500 : 20000;
+      lp.Q.value = 0.7;
+
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+
+      const comp = ctx.createDynamicsCompressor();
+      if (settings.stereo) {
+        comp.threshold.value = -6;
+        comp.knee.value = 12;
+        comp.ratio.value = 1.5;
+        comp.attack.value = 0.005;
+        comp.release.value = 0.15;
+      } else {
+        comp.threshold.value = -18;
+        comp.knee.value = 18;
+        comp.ratio.value = 3.5;
+        comp.attack.value = 0.005;
+        comp.release.value = 0.15;
+      }
+
+      const gate = ctx.createGain();
+      const startOpen = this.gateBypassed || this.vadThreshold <= 0;
+      gate.gain.value = startOpen ? 1 : 0;
+
+      source.connect(hp);
+      hp.connect(lp);
+      lp.connect(analyser);
+
+      let outStream = rawStream;
+      if (typeof ctx.createMediaStreamDestination === 'function') {
+        const dest = ctx.createMediaStreamDestination();
+        lp.connect(comp);
+        comp.connect(gate);
+        gate.connect(dest);
+        if (dest.stream.getAudioTracks().some((t) => t.readyState === 'live')) {
+          outStream = dest.stream;
+        }
+      }
+
+      this.vadSource = source;
+      this.hpFilter = hp;
+      this.lpFilter = lp;
+      this.vadAnalyser = analyser;
+      this.compressor = comp;
+      this.gateGain = gate;
+      this.gateState = { open: startOpen, hangoverUntil: 0 };
+
+      const buf = new Float32Array(analyser.fftSize);
       this.vadTimer = window.setInterval(() => {
         if (!this.vadAnalyser) return;
         this.vadAnalyser.getFloatTimeDomainData(buf);
-        let sum = 0;
-        for (let i = 0; i < buf.length; i += 1) {
-          sum += buf[i] * buf[i];
-        }
-        const rms = Math.sqrt(sum / buf.length);
-        const level = Math.min(100, Math.round(rms * 350));
+        const level = computeRmsLevel(buf);
         this.onMicLevel(level);
 
         const now = performance.now();
-        if (level >= this.vadThreshold) {
-          this.hangoverUntil = now + 260;
-          if (!this.currentlySpeaking) {
-            this.currentlySpeaking = true;
-            this.onSpeakingChange(true);
-          }
-        } else if (this.currentlySpeaking && now > this.hangoverUntil) {
-          this.currentlySpeaking = false;
-          this.onSpeakingChange(false);
+        this.gateState = evaluateNoiseGate(this.gateState, level, this.vadThreshold, now);
+
+        if (this.gateGain && this.ctx) {
+          const open = this.gateBypassed || this.vadThreshold <= 0 || this.gateState.open;
+          const targetGain = open ? 1 : 0;
+          const tc = open ? 0.012 : 0.08;
+          this.gateGain.gain.setTargetAtTime(targetGain, this.ctx.currentTime, tc);
         }
-      }, 60);
+
+        const shouldSpeak = this.micTransmissionEnabled && this.gateState.open;
+        if (shouldSpeak !== this.currentlySpeaking) {
+          this.currentlySpeaking = shouldSpeak;
+          this.onSpeakingChange(shouldSpeak);
+        }
+      }, 40);
+
+      return outStream;
     } catch {
-      // VAD optional if AudioContext restricted
+      return rawStream;
     }
   }
 
   setMicEnabled(enabled: boolean) {
-    if (!this.micStream) return;
-    for (const track of this.micStream.getAudioTracks()) {
-      track.enabled = enabled;
+    this.micTransmissionEnabled = enabled;
+    for (const stream of [this.rawMicStream, this.micStream]) {
+      if (!stream) continue;
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = enabled;
+      }
     }
     if (!enabled && this.currentlySpeaking) {
       this.currentlySpeaking = false;
@@ -417,20 +513,40 @@ export class AudioEngine {
       window.clearInterval(this.vadTimer);
       this.vadTimer = null;
     }
-    try {
-      this.vadSource?.disconnect();
-      this.vadAnalyser?.disconnect();
-    } catch {
-      // Ignore
+    for (const node of [
+      this.vadSource,
+      this.hpFilter,
+      this.lpFilter,
+      this.vadAnalyser,
+      this.compressor,
+      this.gateGain,
+    ]) {
+      try {
+        node?.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
     }
     this.vadSource = null;
+    this.hpFilter = null;
+    this.lpFilter = null;
     this.vadAnalyser = null;
-    if (this.micStream) {
+    this.compressor = null;
+    this.gateGain = null;
+    this.gateState = { open: false, hangoverUntil: 0 };
+
+    if (this.rawMicStream) {
+      for (const t of this.rawMicStream.getTracks()) {
+        t.stop();
+      }
+    }
+    if (this.micStream && this.micStream !== this.rawMicStream) {
       for (const t of this.micStream.getTracks()) {
         t.stop();
       }
-      this.micStream = null;
     }
+    this.rawMicStream = null;
+    this.micStream = null;
     if (this.currentlySpeaking) {
       this.currentlySpeaking = false;
       this.onSpeakingChange(false);
