@@ -95,10 +95,13 @@ export const api = {
     );
   },
 
-  listMessages(serverUrl: string, token: string, channelId: string, limit = 50) {
+  /** Newest `limit` messages, or the `limit` messages just before `before` (created_at). */
+  listMessages(serverUrl: string, token: string, channelId: string, limit = 50, before?: string) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (before) params.set('before', before);
     return request<Message[]>(
       serverUrl,
-      `/api/channels/${encodeURIComponent(channelId)}/messages?limit=${limit}`,
+      `/api/channels/${encodeURIComponent(channelId)}/messages?${params.toString()}`,
       {},
       token,
     );

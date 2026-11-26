@@ -780,6 +780,12 @@ button {
   font-size: 0.86rem;
 }
 
+.load-older-row {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px;
+}
+
 .invite-link-row {
   display: flex;
   align-items: center;

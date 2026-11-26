@@ -574,12 +574,16 @@ export const firebaseBackend = {
     });
   },
 
-  subscribeDmMessages(pairId: string, onMessages: (messages: Message[]) => void): () => void {
+  subscribeDmMessages(
+    pairId: string,
+    onMessages: (messages: Message[]) => void,
+    limit = 80,
+  ): () => void {
     const { rtdb } = getFirebaseServices();
     const q = query(
       ref(rtdb, `dms/${pairId}`),
       orderByChild('created_at'),
-      limitToLast(80),
+      limitToLast(limit),
     );
     return onValue(q, (snap) => {
       const raw = (snap.val() as Record<string, Message> | null) || {};
@@ -840,12 +844,13 @@ export const firebaseBackend = {
   subscribeChannelMessages(
     channelId: string,
     onMessages: (messages: Message[]) => void,
+    limit = 80,
   ): () => void {
     const { rtdb } = getFirebaseServices();
     const q = query(
       ref(rtdb, `messages/${channelId}`),
       orderByChild('created_at'),
-      limitToLast(80),
+      limitToLast(limit),
     );
     return onValue(q, (snap) => {
       const raw = (snap.val() as Record<string, Message> | null) || {};

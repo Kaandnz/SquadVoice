@@ -1,4 +1,4 @@
-import { ClipboardEvent, FormEvent, useEffect, useRef, useState } from 'react';
+import { ClipboardEvent, FormEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   AtSign,
   Check,
@@ -86,6 +86,9 @@ export function ChatPanel() {
     dmMessagesByPeer,
     typingUsers,
     memberListOpen,
+    chatHistoryMore,
+    loadingOlderMessages,
+    loadOlderMessages,
     sendMessage,
     editMessage,
     deleteMessage,
@@ -115,7 +118,9 @@ export function ChatPanel() {
   const [zoomedImg, setZoomedImg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollHeightBeforeLoadRef = useRef<number | null>(null);
   const typingTimerRef = useRef<number | null>(null);
 
   const activeChannel = channels.find((c) => c.id === activeTextChannelId);
@@ -136,11 +141,35 @@ export function ChatPanel() {
 
   const pinnedMessages = rawMessages.filter((m) => Boolean(m.pinned));
 
+  const historyKey = activeDmUserId ? `dm:${activeDmUserId}` : activeTextChannelId;
+  const canLoadOlder = Boolean(historyKey && chatHistoryMore[historyKey]) && !searchQuery.trim();
+  const firstMessageId = rawMessages[0]?.id;
+  const lastMessageId = rawMessages[rawMessages.length - 1]?.id;
+
+  // Follow the conversation only when a newer message arrives (or we switch rooms);
+  // prepending older history must not yank the view to the bottom.
   useEffect(() => {
     if (!searchQuery.trim()) {
       listEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [rawMessages.length, activeTextChannelId, activeDmUserId, searchQuery]);
+  }, [lastMessageId, activeTextChannelId, activeDmUserId, searchQuery]);
+
+  // After older messages are prepended, keep the message you were reading in place.
+  // Runs once the load settles, whether or not it brought anything new.
+  useLayoutEffect(() => {
+    if (loadingOlderMessages) return;
+    const el = listRef.current;
+    const before = scrollHeightBeforeLoadRef.current;
+    scrollHeightBeforeLoadRef.current = null;
+    if (el && before !== null) {
+      el.scrollTop += el.scrollHeight - before;
+    }
+  }, [firstMessageId, loadingOlderMessages]);
+
+  const handleLoadOlder = () => {
+    scrollHeightBeforeLoadRef.current = listRef.current?.scrollHeight ?? null;
+    loadOlderMessages().catch(() => {});
+  };
 
   useEffect(() => {
     setReplyTo(null);
@@ -322,7 +351,19 @@ export function ChatPanel() {
         </div>
       )}
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={listRef}>
+        {canLoadOlder && filteredMessages.length > 0 && (
+          <div className="load-older-row">
+            <button
+              type="button"
+              className="secondary-btn small"
+              onClick={handleLoadOlder}
+              disabled={loadingOlderMessages}
+            >
+              {loadingOlderMessages ? 'Yükleniyor…' : 'Daha eski mesajları yükle'}
+            </button>
+          </div>
+        )}
         {filteredMessages.length === 0 ? (
           <div className="chat-empty">
             {dmPeer ? (

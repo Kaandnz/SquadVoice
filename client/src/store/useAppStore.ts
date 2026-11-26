@@ -14,6 +14,15 @@ import {
   saveServerUrl,
 } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
+import {
+  chatScopeKey,
+  FIREBASE_PAGE_SIZE,
+  mayHaveMore,
+  mergeOlderMessages,
+  nextWindowSize,
+  SERVER_PAGE_SIZE,
+  type ChatScope,
+} from '../lib/chatHistory';
 import { shouldReacquireMic } from '../lib/micDevices';
 import { classifyOwnVoiceEntry } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
@@ -124,6 +133,9 @@ export interface AppState {
   /** Neutral notice (auto-dismissed), e.g. "Mikrofon değişti". */
   toastInfo: string | null;
   micTestActive: boolean;
+  /** Per conversation (channel id or "dm:<peer>"): older messages may exist. */
+  chatHistoryMore: Record<string, boolean>;
+  loadingOlderMessages: boolean;
 
   // Auth & Profile
   setServerUrl: (url: string) => void;
@@ -196,6 +208,7 @@ export interface AppState {
   clearToast: () => void;
   startMicTest: () => Promise<void>;
   stopMicTest: () => void;
+  loadOlderMessages: () => Promise<void>;
 }
 
 let pttCleanup: (() => void) | null = null;
@@ -531,7 +544,17 @@ function pruneStoppedRemoteMedia(
   }
 }
 
-function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { kind: 'dm'; peerId: string }) {
+let currentChatScope: ChatScope | null = null;
+let currentChatWindow = FIREBASE_PAGE_SIZE;
+
+function markHistory(key: string, received: number, requested: number) {
+  useAppStore.setState((prev) => ({
+    chatHistoryMore: { ...prev.chatHistoryMore, [key]: mayHaveMore(received, requested) },
+    loadingOlderMessages: false,
+  }));
+}
+
+function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE_SIZE) {
   if (fbMessagesUnsub) {
     fbMessagesUnsub();
     fbMessagesUnsub = null;
@@ -543,6 +566,9 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
 
   const myUser = useAppStore.getState().user;
   if (!myUser) return;
+  currentChatScope = scope;
+  currentChatWindow = windowSize;
+  const historyKey = chatScopeKey(scope);
 
   if (scope.kind === 'channel') {
     fbMessagesUnsub = firebaseBackend.subscribeChannelMessages(scope.id, (msgs) => {
@@ -560,7 +586,8 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
           [scope.id]: 0,
         },
       }));
-    });
+      markHistory(historyKey, msgs.length, windowSize);
+    }, windowSize);
     fbTypingUnsub = firebaseBackend.subscribeTyping(scope.id, (users) => {
       useAppStore.setState({
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
@@ -581,7 +608,8 @@ function subscribeFirebaseChatScope(scope: { kind: 'channel'; id: string } | { k
           [scope.peerId]: msgs,
         },
       }));
-    });
+      markHistory(historyKey, msgs.length, windowSize);
+    }, windowSize);
     fbTypingUnsub = firebaseBackend.subscribeTyping(pairId, (users) => {
       useAppStore.setState({
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
@@ -681,6 +709,8 @@ function stopFirebaseListeners() {
   prevVoicePeerIds.clear();
   lastRegularTextChannelId = null;
   selfLeavingVoice = false;
+  currentChatScope = null;
+  currentChatWindow = FIREBASE_PAGE_SIZE;
 }
 
 async function initializeFirebaseSession(user: PublicUser) {
@@ -1012,8 +1042,16 @@ async function initializeAuthenticatedSession(serverUrl: string, token: string, 
   const firstText = channels.find((c) => c.kind === 'text')?.id || null;
   const initialMessages: Record<string, Message[]> = {};
   if (firstText) {
-    initialMessages[firstText] = await api.listMessages(serverUrl, token, firstText, 50);
+    initialMessages[firstText] = await api.listMessages(
+      serverUrl,
+      token,
+      firstText,
+      SERVER_PAGE_SIZE,
+    );
   }
+  const initialHistoryMore: Record<string, boolean> = firstText
+    ? { [firstText]: mayHaveMore(initialMessages[firstText].length, SERVER_PAGE_SIZE) }
+    : {};
 
   const audioSettings = useAppStore.getState().audioSettings;
   rtcMesh?.configure(user.id, rtc.iceServers, audioSettings);
@@ -1026,6 +1064,7 @@ async function initializeAuthenticatedSession(serverUrl: string, token: string, 
     allUsers: users,
     activeTextChannelId: firstText,
     messagesByChannel: initialMessages,
+    chatHistoryMore: initialHistoryMore,
     iceServers: rtc.iceServers,
     turnEnabled: rtc.turnEnabled,
     authError: null,
@@ -1087,6 +1126,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   toastError: null,
   toastInfo: null,
   micTestActive: false,
+  chatHistoryMore: {},
+  loadingOlderMessages: false,
 
   setServerUrl: (url) => {
     const saved = saveServerUrl(url);
@@ -1291,9 +1332,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { serverUrl, token, messagesByChannel } = get();
     if (!token || messagesByChannel[channelId]) return;
     try {
-      const msgs = await api.listMessages(serverUrl, token, channelId, 50);
+      const msgs = await api.listMessages(serverUrl, token, channelId, SERVER_PAGE_SIZE);
       set((prev) => ({
         messagesByChannel: { ...prev.messagesByChannel, [channelId]: msgs },
+        chatHistoryMore: {
+          ...prev.chatHistoryMore,
+          [channelId]: mayHaveMore(msgs.length, SERVER_PAGE_SIZE),
+        },
       }));
     } catch (err) {
       set({ toastError: err instanceof Error ? err.message : 'Mesajlar yüklenemedi' });
@@ -1874,5 +1919,55 @@ export const useAppStore = create<AppState>((set, get) => ({
   stopMicTest: () => {
     audioEngine?.stopMicTest();
     set({ micTestActive: false });
+  },
+
+  loadOlderMessages: async () => {
+    const s = get();
+    if (s.loadingOlderMessages) return;
+
+    if (s.firebaseMode) {
+      const scope = currentChatScope;
+      if (!scope || !s.chatHistoryMore[chatScopeKey(scope)]) return;
+      const next = nextWindowSize(currentChatWindow);
+      if (next === null) {
+        set((prev) => ({ chatHistoryMore: { ...prev.chatHistoryMore, [chatScopeKey(scope)]: false } }));
+        return;
+      }
+      // Widen the live window; the new snapshot replaces the list and clears the flag
+      set({ loadingOlderMessages: true });
+      subscribeFirebaseChatScope(scope, next);
+      return;
+    }
+
+    const channelId = s.activeTextChannelId;
+    if (!channelId || !s.token || !s.chatHistoryMore[channelId]) return;
+    const oldest = (s.messagesByChannel[channelId] || [])[0];
+    if (!oldest) return;
+    set({ loadingOlderMessages: true });
+    try {
+      const older = await api.listMessages(
+        s.serverUrl,
+        s.token,
+        channelId,
+        SERVER_PAGE_SIZE,
+        oldest.created_at,
+      );
+      set((prev) => ({
+        messagesByChannel: {
+          ...prev.messagesByChannel,
+          [channelId]: mergeOlderMessages(prev.messagesByChannel[channelId] || [], older),
+        },
+        chatHistoryMore: {
+          ...prev.chatHistoryMore,
+          [channelId]: mayHaveMore(older.length, SERVER_PAGE_SIZE),
+        },
+        loadingOlderMessages: false,
+      }));
+    } catch (err) {
+      set({
+        loadingOlderMessages: false,
+        toastError: err instanceof Error ? err.message : 'Eski mesajlar yüklenemedi',
+      });
+    }
   },
 }));
