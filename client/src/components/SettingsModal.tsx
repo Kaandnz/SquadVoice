@@ -58,9 +58,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     return () => media.removeEventListener?.('devicechange', refresh);
   }, [open, micTestActive]);
 
-  // Never leave the loopback running once the settings are closed
+  // Never leave the loopback running once the settings are closed or unmounted
   useEffect(() => {
     if (!open) stopMicTest();
+    return () => stopMicTest();
   }, [open, stopMicTest]);
 
   useEffect(() => {
