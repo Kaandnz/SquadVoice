@@ -221,8 +221,17 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
             <button
               type="button"
               className="action-pill primary"
-              onClick={onOpenShareModal}
-              disabled={!canUseDisplayMedia()}
+              style={canUseDisplayMedia() ? undefined : { opacity: 0.55 }}
+              onClick={() => {
+                if (canUseDisplayMedia()) {
+                  onOpenShareModal();
+                } else {
+                  useAppStore.setState({
+                    toastError:
+                      'Mobil tarayıcılar (iOS Safari / Android Chrome) güvenlik gereği ekran paylaşımını desteklemez. Mobilde yayın izleyebilir, konuşabilir ve Kamera açabilirsin.',
+                  });
+                }
+              }}
               title={
                 canUseDisplayMedia()
                   ? 'Ekran ve oyun paylaş'

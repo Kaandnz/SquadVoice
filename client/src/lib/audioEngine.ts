@@ -115,15 +115,15 @@ export class AudioEngine {
 
   async setOutputDevice(deviceId: string) {
     this.outputDeviceId = deviceId || 'default';
-    if (!deviceId || deviceId === 'default') return;
+    const sinkId = !deviceId || deviceId === 'default' ? '' : deviceId;
     const ctx = this.ctx as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null;
     if (ctx && typeof ctx.setSinkId === 'function') {
-      await ctx.setSinkId(deviceId).catch(() => {});
+      await ctx.setSinkId(sinkId).catch(() => {});
     }
     for (const peer of this.remotePeers.values()) {
       const el = peer.audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
       if (typeof el.setSinkId === 'function') {
-        await el.setSinkId(deviceId).catch(() => {});
+        await el.setSinkId(sinkId).catch(() => {});
       }
     }
   }
@@ -132,36 +132,52 @@ export class AudioEngine {
     this.vadThreshold = Math.max(1, Math.min(95, threshold));
   }
 
-  async acquireMic(settings: AudioSettings): Promise<MediaStream> {
+  async acquireMic(
+    settings: AudioSettings,
+    options?: { settleMs?: number },
+  ): Promise<MediaStream> {
     this.stopMic();
     this.setVadThreshold(settings.vadThreshold);
 
-    const audioConstraints: MediaTrackConstraints = {
+    if (options?.settleMs && options.settleMs > 0) {
+      await new Promise((r) => window.setTimeout(r, options.settleMs));
+    }
+
+    const baseProcessing: MediaTrackConstraints = {
       echoCancellation: settings.echoCancellation,
       noiseSuppression: settings.noiseSuppression,
       autoGainControl: settings.autoGainControl,
     };
 
-    if (!IS_MOBILE) {
-      audioConstraints.channelCount = settings.stereo ? 2 : 1;
-      audioConstraints.sampleRate = 48000;
+    const fullConstraints: MediaTrackConstraints = { ...baseProcessing };
+    if (!IS_MOBILE && settings.stereo) {
+      fullConstraints.channelCount = 2;
     }
-
     if (settings.inputDeviceId && settings.inputDeviceId !== 'default') {
-      audioConstraints.deviceId = { exact: settings.inputDeviceId };
+      fullConstraints.deviceId = { exact: settings.inputDeviceId };
     }
 
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
-        video: false,
+    const attempts: Array<MediaTrackConstraints | boolean> = [fullConstraints];
+    if (settings.inputDeviceId && settings.inputDeviceId !== 'default') {
+      attempts.push({
+        ...baseProcessing,
+        deviceId: { ideal: settings.inputDeviceId },
       });
-    } catch {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+    }
+    attempts.push(baseProcessing, true);
+
+    let stream: MediaStream | null = null;
+    let lastError: unknown = null;
+    for (const audio of attempts) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!stream) {
+      throw lastError instanceof Error ? lastError : new Error('Mikrofon açılamadı');
     }
 
     this.micStream = stream;
@@ -170,6 +186,35 @@ export class AudioEngine {
       this.setOutputDevice(settings.outputDeviceId).catch(() => {});
     }
     return stream;
+  }
+
+  async applyAudioConstraints(
+    settings: AudioSettings,
+  ): Promise<{ stream: MediaStream; replaced: boolean }> {
+    this.setVadThreshold(settings.vadThreshold);
+    const track = this.micStream?.getAudioTracks()[0];
+    if (
+      this.micStream &&
+      track &&
+      track.readyState === 'live' &&
+      typeof track.applyConstraints === 'function'
+    ) {
+      try {
+        await track.applyConstraints({
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: settings.autoGainControl,
+        });
+        if (track.readyState === 'live') {
+          return { stream: this.micStream, replaced: false };
+        }
+      } catch {
+        // Fall back to clean reacquire below
+      }
+    }
+
+    const stream = await this.acquireMic(settings, { settleMs: 120 });
+    return { stream, replaced: true };
   }
 
   private setupVad(stream: MediaStream) {

@@ -1699,18 +1699,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       await audioEngine?.setOutputDevice(next.outputDeviceId);
     }
 
-    const needsReacquire =
+    const needsDeviceReacquire =
       get().activeVoiceChannelId !== null &&
-      (patch.inputDeviceId !== undefined ||
-        patch.echoCancellation !== undefined ||
-        patch.noiseSuppression !== undefined ||
-        patch.autoGainControl !== undefined ||
-        patch.stereo !== undefined);
+      (patch.inputDeviceId !== undefined || patch.stereo !== undefined);
 
-    if (needsReacquire && audioEngine && rtcMesh) {
-      const stream = await audioEngine.acquireMic(next);
-      await rtcMesh.setMicStream(stream);
-      syncMicTransmission();
+    const needsConstraintUpdate =
+      get().activeVoiceChannelId !== null &&
+      !needsDeviceReacquire &&
+      (patch.echoCancellation !== undefined ||
+        patch.noiseSuppression !== undefined ||
+        patch.autoGainControl !== undefined);
+
+    try {
+      if (needsDeviceReacquire && audioEngine && rtcMesh) {
+        const stream = await audioEngine.acquireMic(next, { settleMs: 120 });
+        await rtcMesh.setMicStream(stream);
+        syncMicTransmission();
+      } else if (needsConstraintUpdate && audioEngine && rtcMesh) {
+        const { stream, replaced } = await audioEngine.applyAudioConstraints(next);
+        if (replaced) {
+          await rtcMesh.setMicStream(stream);
+        }
+        syncMicTransmission();
+      }
+    } catch (err) {
+      set({
+        toastError:
+          err instanceof Error
+            ? `Ses ayarı uygulanamadı: ${err.message}`
+            : 'Ses ayarı uygulanamadı.',
+      });
     }
   },
 

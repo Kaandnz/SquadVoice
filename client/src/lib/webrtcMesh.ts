@@ -165,9 +165,30 @@ export class WebRtcMeshManager {
     for (const entry of this.peers.values()) {
       await this.enqueue(entry, async () => {
         if (entry.micSender) {
-          await entry.micSender.replaceTrack(micTrack).catch(() => {});
+          try {
+            await entry.micSender.replaceTrack(micTrack);
+            let dirChanged = false;
+            for (const t of entry.pc.getTransceivers()) {
+              if (t.sender === entry.micSender && t.direction !== 'sendrecv') {
+                t.direction = 'sendrecv';
+                dirChanged = true;
+              }
+            }
+            if (dirChanged) {
+              await this.sendOfferNow(entry);
+            }
+          } catch {
+            try {
+              entry.pc.removeTrack(entry.micSender);
+            } catch {
+              // Ignore removeTrack failure
+            }
+            entry.micSender = micTrack && stream ? entry.pc.addTrack(micTrack, stream) : null;
+            await this.sendOfferNow(entry);
+          }
         } else if (micTrack && stream) {
           entry.micSender = entry.pc.addTrack(micTrack, stream);
+          await this.sendOfferNow(entry);
         }
       });
     }
@@ -214,6 +235,7 @@ export class WebRtcMeshManager {
     const tunedSdp = tuneOpusSdp(desc.sdp || '', {
       bitrateKbps: this.audioSettings.opusBitrateKbps,
       stereo: this.audioSettings.stereo,
+      dtx: false,
     });
     try {
       await pc.setLocalDescription({ type: desc.type, sdp: tunedSdp });
