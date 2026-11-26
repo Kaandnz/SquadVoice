@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { computeRmsLevel, evaluateNoiseGate, limiterMakeupGain } from './audioGate';
+import {
+  AUTO_MAX_THRESHOLD_DB,
+  AUTO_MIN_THRESHOLD_DB,
+  autoGateThreshold,
+  dbFromMeterPercent,
+  effectiveGateMode,
+  evaluateNoiseGate,
+  levelDb,
+  limiterMakeupGain,
+  meterPercent,
+  trackNoiseFloor,
+} from './audioGate';
 
 describe('limiterMakeupGain', () => {
   it('matches the Web Audio spec formula for the boost limiter (-3 dB, 20:1)', () => {
@@ -13,38 +24,71 @@ describe('limiterMakeupGain', () => {
   });
 });
 
-describe('audioGate helpers', () => {
-  it('computes normalized RMS levels from PCM samples', () => {
-    expect(computeRmsLevel([])).toBe(0);
-    expect(computeRmsLevel([0, 0, 0, 0])).toBe(0);
-    expect(computeRmsLevel([0.1, -0.1, 0.1, -0.1])).toBe(35);
-    expect(computeRmsLevel([1, 1])).toBe(100);
+describe('levels in dB', () => {
+  it('measures RMS in dBFS and floors silence', () => {
+    expect(levelDb([1, -1, 1, -1])).toBeCloseTo(0, 6);
+    expect(levelDb([0.1, -0.1])).toBeCloseTo(-20, 6);
+    expect(levelDb([0, 0, 0])).toBe(-80);
+    expect(levelDb([])).toBe(-80);
   });
 
-  it('opens at threshold, holds across hysteresis and hangover, and closes afterward', () => {
-    const closed = { open: false, hangoverUntil: 0 };
-    expect(evaluateNoiseGate(closed, 12, 20, 1000).open).toBe(false);
-
-    const opened = evaluateNoiseGate(closed, 22, 20, 1000);
-    expect(opened.open).toBe(true);
-    expect(opened.hangoverUntil).toBe(1320);
-
-    // Between 0.65 * 20 (13) and 20 stays open and refreshes hangover
-    const heldByHysteresis = evaluateNoiseGate(opened, 14, 20, 1200);
-    expect(heldByHysteresis.open).toBe(true);
-    expect(heldByHysteresis.hangoverUntil).toBe(1520);
-
-    // Below hysteresis but within hangover still stays open
-    const heldByHangover = evaluateNoiseGate(heldByHysteresis, 2, 20, 1450);
-    expect(heldByHangover.open).toBe(true);
-
-    // After hangover expires, gate closes cleanly
-    const closedAgain = evaluateNoiseGate(heldByHangover, 2, 20, 1600);
-    expect(closedAgain.open).toBe(false);
+  it('maps -80..0 dB onto the 0..100 meter and back', () => {
+    expect(meterPercent(-80)).toBe(0);
+    expect(meterPercent(-40)).toBe(50);
+    expect(meterPercent(0)).toBe(100);
+    expect(meterPercent(-200)).toBe(0);
+    expect(dbFromMeterPercent(50)).toBe(-40);
   });
 
-  it('stays always open when threshold is 0', () => {
-    const res = evaluateNoiseGate({ open: false, hangoverUntil: 0 }, 0, 0, 500);
-    expect(res.open).toBe(true);
+  it('puts normal speech in the middle of the meter, not the bottom', () => {
+    // -30 dBFS RMS is ordinary speech; the old linear scale showed it as ~11 %
+    expect(meterPercent(-30)).toBeGreaterThan(55);
+  });
+});
+
+describe('evaluateNoiseGate (dB)', () => {
+  const closed = { open: false, hangoverUntil: 0 };
+
+  it('opens at the threshold and holds through hysteresis and hangover', () => {
+    expect(evaluateNoiseGate(closed, -55, -50, 1000).open).toBe(false);
+
+    const opened = evaluateNoiseGate(closed, -45, -50, 1000);
+    expect(opened).toEqual({ open: true, hangoverUntil: 1350 });
+
+    // within 6 dB below the threshold: stays open and refreshes the hangover
+    const held = evaluateNoiseGate(opened, -54, -50, 1200);
+    expect(held).toEqual({ open: true, hangoverUntil: 1550 });
+
+    // quiet, but the word is still ending: hangover keeps it open
+    expect(evaluateNoiseGate(held, -75, -50, 1500).open).toBe(true);
+    // then it closes
+    expect(evaluateNoiseGate(held, -75, -50, 1600).open).toBe(false);
+  });
+
+  it('does not open on a level between close and open thresholds', () => {
+    expect(evaluateNoiseGate(closed, -53, -50, 0).open).toBe(false);
+  });
+});
+
+describe('automatic sensitivity', () => {
+  it('drops quickly to a quieter room and rises only slowly while you talk', () => {
+    let floor = -60;
+    for (let i = 0; i < 25; i += 1) floor = trackNoiseFloor(floor, -70, 20); // 0.5 s quiet
+    expect(floor).toBeLessThan(-69);
+
+    for (let i = 0; i < 100; i += 1) floor = trackNoiseFloor(floor, -20, 20); // 2 s speech
+    expect(floor).toBeLessThan(-55);
+  });
+
+  it('keeps the threshold a margin above the noise, within sane bounds', () => {
+    expect(autoGateThreshold(-60)).toBe(-50);
+    expect(autoGateThreshold(-90)).toBe(AUTO_MIN_THRESHOLD_DB);
+    // a loud room never pushes the threshold above normal speech
+    expect(autoGateThreshold(-20)).toBe(AUTO_MAX_THRESHOLD_DB);
+  });
+
+  it('lets push-to-talk bypass the gate', () => {
+    expect(effectiveGateMode({ pttEnabled: true, inputSensitivity: 'manual' })).toBe('off');
+    expect(effectiveGateMode({ pttEnabled: false, inputSensitivity: 'auto' })).toBe('auto');
   });
 });

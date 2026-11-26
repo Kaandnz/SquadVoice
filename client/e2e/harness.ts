@@ -26,7 +26,8 @@ const settings: AudioSettings = {
   echoCancellation: true,
   noiseSuppression: true,
   autoGainControl: true,
-  vadThreshold: 14,
+  inputSensitivity: 'auto',
+  gateThresholdDb: -50,
   pttEnabled: false,
   pttKey: 'Backquote',
   soundsEnabled: false,
@@ -156,6 +157,12 @@ const api = {
     audio.stopMicTest();
   },
   micTestRunning: () => audio.isMicTestRunning(),
+  setSensitivity(mode: 'auto' | 'manual' | 'off', gateThresholdDb = -50) {
+    settings.inputSensitivity = mode;
+    settings.gateThresholdDb = gateThresholdDb;
+    audio.applySensitivity(settings);
+  },
+  micTrackEnabled: () => audio.getMicTrack()?.enabled ?? null,
   peakMicLevel: () => peakMicLevel,
   leave() {
     mesh.closeAll();
