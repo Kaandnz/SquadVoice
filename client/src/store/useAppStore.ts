@@ -205,6 +205,18 @@ const fbUnreadUnsubs = new Map<string, () => void>();
 const lastSeenMsgIds = new Map<string, string>();
 let prevVoicePeerIds = new Set<string>();
 let soundboardClearTimer: number | null = null;
+let lastRegularTextChannelId: string | null = null;
+let selfLeavingVoice = false;
+
+function resolveFallbackTextChannelId(channels: Channel[]): string | null {
+  if (
+    lastRegularTextChannelId &&
+    channels.some((c) => c.id === lastRegularTextChannelId && c.kind === 'text')
+  ) {
+    return lastRegularTextChannelId;
+  }
+  return channels.find((c) => c.kind === 'text')?.id || null;
+}
 
 function maybePlayUi(kind: Parameters<typeof playUiSound>[0]) {
   const s = useAppStore.getState();
@@ -492,15 +504,15 @@ function subscribeFirebaseSoundboard(channelId: string | null) {
 }
 
 function syncUnreadWatchers(channels: Channel[]) {
-  const textIds = new Set(channels.filter((c) => c.kind === 'text').map((c) => c.id));
+  const trackedIds = new Set(channels.map((c) => c.id));
   for (const [id, unsub] of Array.from(fbUnreadUnsubs.entries())) {
-    if (!textIds.has(id)) {
+    if (!trackedIds.has(id)) {
       unsub();
       fbUnreadUnsubs.delete(id);
     }
   }
   for (const ch of channels) {
-    if (ch.kind !== 'text' || fbUnreadUnsubs.has(ch.id)) continue;
+    if (fbUnreadUnsubs.has(ch.id)) continue;
     const unsub = firebaseBackend.subscribeChannelLatestMessage(ch.id, (latest) => {
       if (!latest) return;
       const st = useAppStore.getState();
@@ -525,7 +537,8 @@ function syncUnreadWatchers(channels: Channel[]) {
           latest.content.toLowerCase().includes(`@${st.user.username.toLowerCase()}`);
         if (mentioned) {
           maybePlayUi('message');
-          maybeNotifyDesktop(`#${ch.name} • ${latest.display_name}`, latest.content);
+          const prefix = ch.kind === 'voice' ? `🔊 ${ch.name}` : `#${ch.name}`;
+          maybeNotifyDesktop(`${prefix} • ${latest.display_name}`, latest.content);
         }
       }
       lastSeenMsgIds.set(ch.id, latest.id);
@@ -557,6 +570,8 @@ function stopFirebaseListeners() {
   fbUnreadUnsubs.clear();
   lastSeenMsgIds.clear();
   prevVoicePeerIds.clear();
+  lastRegularTextChannelId = null;
+  selfLeavingVoice = false;
 }
 
 async function initializeFirebaseSession(user: PublicUser) {
@@ -621,14 +636,10 @@ async function initializeFirebaseSession(user: PublicUser) {
     },
     onChannels: (channels) => {
       const prevState = useAppStore.getState();
-      const textExists =
+      const textExists = Boolean(
         prevState.activeTextChannelId &&
-        channels.some(
-          (c) => c.id === prevState.activeTextChannelId && c.kind === 'text',
-        );
-      const nextTextId = textExists
-        ? prevState.activeTextChannelId
-        : channels.find((c) => c.kind === 'text')?.id || null;
+          channels.some((c) => c.id === prevState.activeTextChannelId),
+      );
 
       const leftVoice =
         prevState.activeVoiceChannelId &&
@@ -638,6 +649,17 @@ async function initializeFirebaseSession(user: PublicUser) {
         rtcMesh?.closeAll();
         audioEngine?.destroyAll();
         subscribeFirebaseSoundboard(null);
+      }
+
+      let nextTextId = textExists
+        ? prevState.activeTextChannelId
+        : resolveFallbackTextChannelId(channels);
+      if (leftVoice && prevState.activeTextChannelId === prevState.activeVoiceChannelId) {
+        nextTextId = resolveFallbackTextChannelId(channels);
+      }
+      const nextTextChannel = channels.find((c) => c.id === nextTextId);
+      if (nextTextChannel?.kind === 'text') {
+        lastRegularTextChannelId = nextTextChannel.id;
       }
 
       useAppStore.setState({
@@ -654,17 +676,21 @@ async function initializeFirebaseSession(user: PublicUser) {
         subscribeFirebaseChatScope({ kind: 'channel', id: nextTextId });
       }
     },
-    onVoiceMembers: (voiceMembers) => {
-      useAppStore.setState({ voiceMembers });
-      for (const m of voiceMembers) {
+    onVoiceMembers: (rawVoiceMembers) => {
+      const activeMembers = rawVoiceMembers.filter((m) => !m.kicked_by_admin);
+      useAppStore.setState({ voiceMembers: activeMembers });
+      for (const m of activeMembers) {
         rtcMesh?.setPeerScreenStreamId(m.user_id, m.screen_stream_id);
         rtcMesh?.setPeerCameraStreamId(m.user_id, m.camera_stream_id ?? null);
       }
 
       const st = useAppStore.getState();
       if (st.activeVoiceChannelId && st.user) {
-        const myEntry = voiceMembers.find((m) => m.user_id === st.user!.id);
-        if (!myEntry) {
+        const myEntry = rawVoiceMembers.find((m) => m.user_id === st.user!.id);
+        if (myEntry?.kicked_by_admin) {
+          const prevVoiceId = st.activeVoiceChannelId;
+          const shouldReturnToText =
+            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
           rtcMesh?.closeAll();
           audioEngine?.destroyAll();
           subscribeFirebaseSoundboard(null);
@@ -681,6 +707,41 @@ async function initializeFirebaseSession(user: PublicUser) {
             peerStats: {},
             toastError: 'Yönetici tarafından ses odasından çıkarıldın.',
           });
+          firebaseBackend.leaveVoice(st.user.id).catch(() => {});
+          if (shouldReturnToText) {
+            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
+            if (fallbackId) {
+              useAppStore.getState().selectTextChannel(fallbackId);
+            }
+          }
+          return;
+        }
+        if (!myEntry) {
+          const prevVoiceId = st.activeVoiceChannelId;
+          const shouldReturnToText =
+            !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
+          rtcMesh?.closeAll();
+          audioEngine?.destroyAll();
+          subscribeFirebaseSoundboard(null);
+          prevVoicePeerIds.clear();
+          useAppStore.setState({
+            activeVoiceChannelId: null,
+            forceMuted: false,
+            speaking: false,
+            localScreenStream: null,
+            localCameraStream: null,
+            remoteScreenStreams: {},
+            remoteCameraStreams: {},
+            focusedStreamUserId: null,
+            peerStats: {},
+            toastError: selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.',
+          });
+          if (shouldReturnToText) {
+            const fallbackId = resolveFallbackTextChannelId(useAppStore.getState().channels);
+            if (fallbackId) {
+              useAppStore.getState().selectTextChannel(fallbackId);
+            }
+          }
           return;
         }
 
@@ -696,11 +757,16 @@ async function initializeFirebaseSession(user: PublicUser) {
 
         const effectiveChannelId = myEntry.channel_id;
         if (effectiveChannelId !== st.activeVoiceChannelId) {
+          const wasViewingOldVoiceChat =
+            !st.activeDmUserId && st.activeTextChannelId === st.activeVoiceChannelId;
           useAppStore.setState({ activeVoiceChannelId: effectiveChannelId });
           subscribeFirebaseSoundboard(effectiveChannelId);
+          if (wasViewingOldVoiceChat) {
+            useAppStore.getState().selectTextChannel(effectiveChannelId);
+          }
         }
 
-        const peersInChannel = voiceMembers
+        const peersInChannel = activeMembers
           .filter((m) => m.channel_id === effectiveChannelId)
           .map((m) => m.user_id);
 
@@ -713,7 +779,7 @@ async function initializeFirebaseSession(user: PublicUser) {
         }
         prevVoicePeerIds = nextPeerSet;
 
-        pruneStoppedRemoteMedia(voiceMembers, effectiveChannelId);
+        pruneStoppedRemoteMedia(activeMembers, effectiveChannelId);
         rtcMesh?.syncPeers(peersInChannel);
       }
     },
@@ -1086,6 +1152,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   logout: () => {
+    lastRegularTextChannelId = null;
+    selfLeavingVoice = false;
     if (pttCleanup) {
       pttCleanup();
       pttCleanup = null;
@@ -1122,6 +1190,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectTextChannel: async (channelId) => {
+    const targetChannel = get().channels.find((c) => c.id === channelId);
+    if (targetChannel?.kind === 'text') {
+      lastRegularTextChannelId = channelId;
+    }
     set((prev) => ({
       activeTextChannelId: channelId,
       activeDmUserId: null,
@@ -1290,7 +1362,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   joinVoice: async (channelId) => {
     ensureEngines();
     const state = get();
-    if (state.activeVoiceChannelId === channelId || !state.user) return;
+    if (!state.user) return;
+    if (state.activeVoiceChannelId === channelId) {
+      await get().selectTextChannel(channelId);
+      return;
+    }
+
+    selfLeavingVoice = false;
 
     try {
       await audioEngine!.unlockAudio();
@@ -1338,6 +1416,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     }
 
+    await get().selectTextChannel(channelId);
     maybePlayUi('join');
 
     const peers = get()
@@ -1348,13 +1427,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   leaveVoice: () => {
     const s = get();
+    const prevVoiceId = s.activeVoiceChannelId;
+    const shouldReturnToText =
+      !s.activeDmUserId && Boolean(prevVoiceId) && s.activeTextChannelId === prevVoiceId;
+
+    selfLeavingVoice = true;
     rtcMesh?.closeAll();
     audioEngine?.destroyAll();
-    if (s.firebaseMode && s.user) {
+    if (s.firebaseMode) {
       subscribeFirebaseSoundboard(null);
-      firebaseBackend.leaveVoice(s.user.id).catch(() => {});
-    } else {
-      wsClient?.send({ type: 'leave_voice' });
     }
     prevVoicePeerIds.clear();
     maybePlayUi('leave');
@@ -1368,7 +1449,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       remoteCameraStreams: {},
       focusedStreamUserId: null,
       peerStats: {},
+      toastError: null,
     });
+
+    if (s.firebaseMode && s.user) {
+      firebaseBackend
+        .leaveVoice(s.user.id)
+        .catch(() => {})
+        .finally(() => {
+          selfLeavingVoice = false;
+        });
+    } else {
+      wsClient?.send({ type: 'leave_voice' });
+      selfLeavingVoice = false;
+    }
+
+    if (shouldReturnToText) {
+      const fallbackId = resolveFallbackTextChannelId(get().channels);
+      if (fallbackId) {
+        get().selectTextChannel(fallbackId);
+      }
+    }
   },
 
   reconnectVoicePeers: () => {

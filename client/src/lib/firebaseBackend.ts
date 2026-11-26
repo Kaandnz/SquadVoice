@@ -407,7 +407,10 @@ export const firebaseBackend = {
 
   async adminDisconnectVoice(targetUid: string): Promise<void> {
     const { rtdb } = getFirebaseServices();
-    await remove(ref(rtdb, `voice/${targetUid}`));
+    await update(ref(rtdb, `voice/${targetUid}`), { kicked_by_admin: true });
+    window.setTimeout(() => {
+      remove(ref(rtdb, `voice/${targetUid}`)).catch(() => {});
+    }, 1200);
   },
 
   async adminMoveVoice(targetUid: string, targetChannelId: string): Promise<void> {
@@ -831,6 +834,7 @@ export const firebaseBackend = {
       muted: state.muted,
       deafened: state.deafened,
       force_muted: false,
+      kicked_by_admin: false,
       screen_sharing: state.screen_sharing,
       screen_stream_id: state.screen_stream_id,
       camera_on: Boolean(state.camera_on),

@@ -243,16 +243,10 @@ pub async fn list_messages(
     Path(channel_id): Path<String>,
     Query(query): Query<MessagesQuery>,
 ) -> Result<Json<Vec<MessageDto>>, AppError> {
-    let channel = state
+    let _channel = state
         .db
         .get_channel(&channel_id)?
         .ok_or_else(|| AppError::NotFound("Kanal bulunamadı".to_string()))?;
-
-    if channel.kind != "text" {
-        return Err(AppError::BadRequest(
-            "Sadece metin kanallarında mesaj geçmişi vardır".to_string(),
-        ));
-    }
 
     let limit = query.limit.unwrap_or(50);
     let msgs = state

@@ -6,6 +6,7 @@ import {
   HeadphoneOff,
   Headphones,
   LogOut,
+  MessageSquare,
   Mic,
   MicOff,
   Monitor,
@@ -231,6 +232,8 @@ export function Sidebar({
             {voiceChannels.map((ch) => {
               const members = voiceMembers.filter((m) => m.channel_id === ch.id);
               const isJoined = activeVoiceChannelId === ch.id;
+              const unread = unreadByChannel[ch.id] || 0;
+              const isVoiceChatOpen = !activeDmUserId && activeTextChannelId === ch.id;
               return (
                 <div key={ch.id} className="voice-group">
                   <div className={`channel-row ${isJoined ? 'active-voice' : ''}`}>
@@ -256,12 +259,28 @@ export function Sidebar({
                           type="button"
                           className="channel-btn"
                           onClick={() => {
-                            joinVoice(ch.id);
+                            if (isJoined) {
+                              selectTextChannel(ch.id);
+                            } else {
+                              joinVoice(ch.id);
+                            }
                             onCloseMobile();
                           }}
                         >
                           <Volume2 size={16} />
                           <span>{ch.name}</span>
+                        </button>
+                        {unread > 0 && <span className="unread-badge">{unread}</span>}
+                        <button
+                          type="button"
+                          className={`icon-btn tiny ${isVoiceChatOpen ? 'active-icon' : ''}`}
+                          title="Oda sohbetini aç"
+                          onClick={() => {
+                            selectTextChannel(ch.id);
+                            onCloseMobile();
+                          }}
+                        >
+                          <MessageSquare size={13} />
                         </button>
                         {firebaseMode && user?.role === 'admin' && (
                           <button

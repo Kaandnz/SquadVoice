@@ -56,6 +56,7 @@ export interface VoiceMemberState {
   muted: boolean;
   deafened: boolean;
   force_muted?: boolean;
+  kicked_by_admin?: boolean;
   screen_sharing: boolean;
   screen_stream_id: string | null;
   camera_on?: boolean;

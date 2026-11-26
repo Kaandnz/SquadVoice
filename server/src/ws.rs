@@ -209,7 +209,7 @@ async fn handle_client_event(
                 return;
             }
             match state.db.get_channel(&channel_id) {
-                Ok(Some(ch)) if ch.kind == "text" => {
+                Ok(Some(_)) => {
                     match state.db.create_message(
                         &channel_id,
                         &user.id,
@@ -232,7 +232,7 @@ async fn handle_client_event(
                 }
                 _ => {
                     let _ = tx.send(WsServerEvent::Error {
-                        message: "Metin kanalı bulunamadı".to_string(),
+                        message: "Kanal bulunamadı".to_string(),
                     });
                 }
             }

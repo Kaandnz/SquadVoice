@@ -48,7 +48,6 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const textChannels = channels.filter((c) => c.kind === 'text');
   const onlineIds = new Set(onlineUsers.map((u) => u.id));
 
   useEffect(() => {
@@ -59,7 +58,7 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
     setTurnUrl(turnConfig?.url || '');
     setTurnUsername(turnConfig?.username || '');
     setTurnCredential(turnConfig?.credential || '');
-    setClearChannelId((prev) => prev || textChannels[0]?.id || '');
+    setClearChannelId((prev) => prev || channels[0]?.id || '');
     setStatusMsg(null);
     setErrMsg(null);
   }, [open, serverName, adminInviteCode, turnConfig]);
@@ -100,7 +99,7 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
     setBusy(true);
     try {
       await clearChannelMessages(clearChannelId);
-      setStatusMsg('Seçilen metin kanalının tüm mesajları temizlendi.');
+      setStatusMsg('Seçilen kanalın tüm mesajları temizlendi.');
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : 'Mesajlar silinemedi.');
     } finally {
@@ -228,7 +227,7 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
               </button>
             </form>
 
-            {textChannels.length > 0 && (
+            {channels.length > 0 && (
               <div className="diag-box">
                 <strong>Kanal Geçmişini Temizle</strong>
                 <div className="row-gap" style={{ marginTop: 6 }}>
@@ -238,9 +237,9 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
                     className="dark-select"
                     style={{ flex: 1 }}
                   >
-                    {textChannels.map((ch) => (
+                    {channels.map((ch) => (
                       <option key={ch.id} value={ch.id}>
-                        #{ch.name}
+                        {ch.kind === 'voice' ? `🔊 ${ch.name} (Oda Sohbeti)` : `#${ch.name}`}
                       </option>
                     ))}
                   </select>

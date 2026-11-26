@@ -5,6 +5,7 @@ import {
   HeadphoneOff,
   Headphones,
   Maximize2,
+  MessageSquare,
   Mic,
   MicOff,
   Monitor,
@@ -51,6 +52,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     firebaseMode,
     user,
     channels,
+    activeTextChannelId,
+    activeDmUserId,
+    unreadByChannel,
     activeVoiceChannelId,
     voiceMembers,
     muted,
@@ -66,6 +70,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     focusedStreamUserId,
     turnEnabled,
     lastSoundboard,
+    selectTextChannel,
     toggleMute,
     toggleDeafen,
     startCamera,
@@ -152,6 +157,8 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const soundMeta = lastSoundboard
     ? SOUNDBOARD_ITEMS.find((i) => i.id === lastSoundboard.sound)
     : null;
+  const isVoiceChatOpen = !activeDmUserId && activeTextChannelId === activeVoiceChannelId;
+  const roomUnread = unreadByChannel[activeVoiceChannelId] || 0;
 
   return (
     <section
@@ -238,6 +245,17 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
               <span>Sesler</span>
             </button>
           )}
+
+          <button
+            type="button"
+            className={`action-pill ${isVoiceChatOpen ? 'primary' : ''}`}
+            onClick={() => selectTextChannel(activeVoiceChannelId)}
+            title="Bu ses odasının özel sohbetini aç"
+          >
+            <MessageSquare size={15} />
+            <span>Oda Sohbeti</span>
+            {roomUnread > 0 && <span className="unread-badge">{roomUnread}</span>}
+          </button>
 
           <button
             type="button"

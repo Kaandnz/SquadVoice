@@ -12,6 +12,7 @@ import {
   Smile,
   Trash2,
   Users,
+  Volume2,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -216,14 +217,22 @@ export function ChatPanel() {
   };
 
   const headerTitle = dmPeer ? dmPeer.display_name : activeChannel?.name || 'genel';
+  const isVoiceChat = !dmPeer && activeChannel?.kind === 'voice';
 
   return (
     <div className="chat-panel">
       <div className="chat-header">
         <div className="chat-header-left">
-          {dmPeer ? <AtSign size={18} /> : <Hash size={18} />}
+          {dmPeer ? (
+            <AtSign size={18} />
+          ) : isVoiceChat ? (
+            <Volume2 size={18} className="accent-green" />
+          ) : (
+            <Hash size={18} />
+          )}
           <span>{headerTitle}</span>
           {dmPeer && <span className="badge-subtle">Özel Mesaj</span>}
+          {isVoiceChat && <span className="badge-subtle">Oda Sohbeti</span>}
         </div>
 
         <div className="chat-header-actions">
@@ -316,18 +325,27 @@ export function ChatPanel() {
       <div className="chat-messages">
         {filteredMessages.length === 0 ? (
           <div className="chat-empty">
-            {dmPeer ? <AtSign size={36} /> : <Hash size={36} />}
+            {dmPeer ? (
+              <AtSign size={36} />
+            ) : isVoiceChat ? (
+              <Volume2 size={36} />
+            ) : (
+              <Hash size={36} />
+            )}
             <h3>
               {searchQuery
                 ? 'Aramana uygun mesaj bulunamadı'
                 : dmPeer
                   ? `${dmPeer.display_name} ile özel sohbet`
-                  : `#${activeChannel?.name || 'genel'} kanalına hoş geldin`}
+                  : isVoiceChat
+                    ? `${activeChannel?.name} oda sohbeti`
+                    : `#${activeChannel?.name || 'genel'} kanalına hoş geldin`}
             </h3>
             {!searchQuery && (
               <p>
-                Markdown (**kalın**, `kod`), emoji tepkisi, yanıtlama veya Ctrl+V görsel
-                destekli.
+                {isVoiceChat
+                  ? 'Bu odadaki mesajlar yalnızca bu ses odasına özeldir — #genel kanalını kirletmeden link, görsel ve mesaj paylaşabilirsin.'
+                  : 'Markdown (**kalın**, `kod`), emoji tepkisi, yanıtlama veya Ctrl+V görsel destekli.'}
               </p>
             )}
           </div>
@@ -631,7 +649,9 @@ export function ChatPanel() {
           placeholder={
             dmPeer
               ? `@${dmPeer.display_name} kullanıcısına mesaj yaz...`
-              : `#${activeChannel?.name || 'genel'} kanalına mesaj yaz...`
+              : isVoiceChat
+                ? `${activeChannel?.name || 'Oda'} oda sohbetine mesaj yaz...`
+                : `#${activeChannel?.name || 'genel'} kanalına mesaj yaz...`
           }
           maxLength={4000}
         />

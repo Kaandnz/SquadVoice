@@ -143,6 +143,8 @@ button {
   flex-direction: column;
   gap: 6px;
   font-size: 0.85rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .auth-form label span,
@@ -154,6 +156,11 @@ button {
 .auth-form input,
 .stack-field select,
 .inline-channel-form input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -250,6 +257,9 @@ button {
 
 .dark-input,
 .dark-select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1611,6 +1621,7 @@ button {
   width: 100%;
   max-width: 480px;
   max-height: 90vh;
+  overflow-x: hidden;
   overflow-y: auto;
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -1734,7 +1745,7 @@ button {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
 }
 
