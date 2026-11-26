@@ -2254,6 +2254,159 @@ button {
   display: none;
 }
 
+/* Collapsible voice stage: one compact bar instead of header + stream + cards */
+.voice-stage.collapsed {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  gap: 6px;
+}
+
+/* (element-qualified so it also beats the mobile "has-stream" chip strip rule) */
+section.voice-stage.collapsed .participant-grid {
+  display: none;
+}
+
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.voice-bar-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.86rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.voice-bar-main:hover {
+  background: var(--bg-hover);
+}
+
+.voice-bar-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-bar-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.voice-bar-avatars .mini-avatar {
+  width: 22px;
+  height: 22px;
+  font-size: 0.65rem;
+  margin-left: -6px;
+  box-shadow: 0 0 0 2px var(--bg-1);
+}
+
+.voice-bar-avatars .mini-avatar:first-child {
+  margin-left: 0;
+}
+
+.voice-bar-more {
+  margin-left: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.voice-bar .live-pill {
+  flex-shrink: 0;
+}
+
+.action-pill.icon-only {
+  flex-shrink: 0;
+  justify-content: center;
+  min-width: 36px;
+  height: 34px;
+  padding: 0 8px;
+}
+
+.voice-stage-title {
+  min-width: 0;
+}
+
+.voice-stage-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-collapse-btn {
+  flex-shrink: 0;
+}
+
+/* Desktop: at the end of the action buttons, so it doesn't widen the title row */
+.stage-collapse-btn.in-title {
+  display: none;
+}
+
+.stage-collapse-btn.in-actions {
+  align-self: center;
+}
+
+/* A hidden stream stays mounted so its (game/system) audio keeps playing */
+.stream-theater.tucked {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+}
+
+.stream-mini-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.stream-mini-label {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-mini-hint {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+}
+
+.stream-mini-row button {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
 /* Mobile Responsive */
 @media (max-width: 820px) {
   .mobile-only {
@@ -2330,6 +2483,20 @@ button {
     display: none;
   }
 
+  /* Phones: the title row gets the collapse toggle top-right; actions scroll below */
+  .voice-stage-title {
+    flex: 1 1 auto;
+  }
+
+  .stage-collapse-btn.in-title {
+    display: grid;
+    margin-left: auto;
+  }
+
+  .stage-collapse-btn.in-actions {
+    display: none;
+  }
+
   .voice-actions {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -2384,16 +2551,91 @@ button {
     display: none;
   }
 
+  /* While a stream is on, people shrink to small chips so the picture gets the room */
   .voice-stage.has-stream .participant-card {
     flex: 0 0 auto;
-    min-width: 145px;
-    padding: 6px 8px;
-    gap: 4px;
+    min-width: 0;
+    max-width: 160px;
+    padding: 4px 10px 4px 4px;
+    gap: 0;
+    border-radius: 999px;
   }
 
+  .voice-stage.has-stream .participant-card .avatar-circle.lg {
+    width: 26px;
+    height: 26px;
+    font-size: 0.75rem;
+  }
+
+  .voice-stage.has-stream .participant-top {
+    gap: 6px;
+  }
+
+  .voice-stage.has-stream .participant-name {
+    font-size: 0.78rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .voice-stage.has-stream .participant-name .you-tag,
+  .voice-stage.has-stream .participant-status .ping-badge,
+  .voice-stage.has-stream .participant-card .conn-details,
   .voice-stage.has-stream .participant-volume,
   .voice-stage.has-stream .admin-voice-actions {
     display: none;
+  }
+
+  .voice-stage.has-stream .participant-status:empty {
+    display: none;
+  }
+
+  /* Narrow phones: give the room name room in the collapsed bar */
+  .voice-bar {
+    gap: 4px;
+  }
+
+  .voice-bar-main {
+    gap: 6px;
+    padding: 4px 2px;
+  }
+
+  .voice-bar-main > svg {
+    display: none;
+  }
+
+  .voice-bar-avatars .mini-avatar:nth-child(n + 4) {
+    display: none;
+  }
+
+  .voice-bar .action-pill.icon-only {
+    min-width: 34px;
+    padding: 0 6px;
+  }
+
+  /* Chat header: one line; the room name is already in the voice bar */
+  .chat-header {
+    padding: 8px 12px;
+  }
+
+  .chat-header-left {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .chat-header-left > span:not(.badge-subtle) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-header-left .badge-subtle {
+    display: none;
+  }
+
+  .chat-header-actions {
+    flex-shrink: 0;
   }
 }
 

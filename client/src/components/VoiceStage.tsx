@@ -6,6 +6,9 @@ import {
   useState,
 } from 'react';
 import {
+  ChevronDown,
+  ChevronsUp,
+  ChevronUp,
   Eye,
   EyeOff,
   HeadphoneOff,
@@ -44,6 +47,24 @@ import { useAppStore } from '../store/useAppStore';
 
 interface VoiceStageProps {
   onOpenShareModal: () => void;
+}
+
+const STAGE_COLLAPSED_KEY = 'squadvoice.voiceStageCollapsed';
+
+function readStageCollapsed(): boolean {
+  try {
+    return localStorage.getItem(STAGE_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeStageCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(STAGE_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    // Private mode / storage full: the toggle still works for this visit
+  }
 }
 
 function isOverlayTarget(target: EventTarget | null): boolean {
@@ -123,6 +144,11 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [expandedStatsUserId, setExpandedStatsUserId] = useState<string | null>(null);
+  // Phones have little height: the whole stage can shrink to one bar, and a stream can be
+  // tucked away on its own. Remembered per device.
+  const [stageCollapsed, setStageCollapsed] = useState(readStageCollapsed);
+  // Id of the stream the user hid; a different stream showing up is visible again
+  const [hiddenStreamKey, setHiddenStreamKey] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -172,6 +198,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const activeStreamId = activeStreamEntry?.id ?? null;
   const isSelfStream = activeStreamId === 'self';
   const shouldRenderVideo = Boolean(activeStream && (!isSelfStream || showSelfPreview));
+  const streamKey = activeStream ? `${activeStreamId}:${activeStream.id}` : null;
+  const streamHidden = Boolean(streamKey && hiddenStreamKey === streamKey);
+  const streamers = roomMembers.filter((m) => m.screen_sharing);
+
+  const toggleStage = () => {
+    const next = !stageCollapsed;
+    writeStageCollapsed(next);
+    setStageCollapsed(next);
+  };
 
   const applyZoom = (nextZoom: number) => {
     const clamped = clampZoom(nextZoom);
@@ -451,17 +486,110 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const roomUnread = unreadByChannel[activeVoiceChannelId] || 0;
   const displayMediaAvailable = canUseDisplayMedia();
 
+  const roomName = voiceChannel?.name || 'Ses Odası';
+
+  const renderCollapseButton = (placement: 'in-title' | 'in-actions') => (
+    <button
+      type="button"
+      className={`icon-btn stage-collapse-btn ${placement}`}
+      onClick={() => {
+        setSoundboardOpen(false);
+        toggleStage();
+      }}
+      aria-expanded={true}
+      title="Ses odasını küçült (sohbete yer aç)"
+      aria-label="Ses odasını küçült"
+    >
+      <ChevronUp size={18} />
+    </button>
+  );
+
   return (
     <section
-      className={`voice-stage ${activeStreamEntry ? 'has-stream' : ''}`}
+      className={`voice-stage ${activeStreamEntry ? 'has-stream' : ''} ${stageCollapsed ? 'collapsed' : ''}`}
       onClick={() => {
         if (needsAudioUnlock) unlockAudio().catch(() => {});
       }}
     >
+      {stageCollapsed ? (
+        <div className="voice-bar">
+          <button
+            type="button"
+            className="voice-bar-main"
+            onClick={toggleStage}
+            aria-expanded={false}
+            title="Ses odasını genişlet"
+          >
+            <Volume2 size={16} className="accent-green" />
+            <span className="voice-bar-name">{roomName}</span>
+            <span className="voice-bar-avatars" aria-label={`${roomMembers.length} kişi`}>
+              {roomMembers.slice(0, 4).map((m) => (
+                <span
+                  key={m.user_id}
+                  className={`mini-avatar ${m.speaking ? 'speaking' : ''}`}
+                  style={{ backgroundColor: m.avatar_color }}
+                  title={m.display_name}
+                >
+                  {m.avatar_url ? (
+                    <img src={m.avatar_url} alt={m.display_name} />
+                  ) : (
+                    m.display_name.slice(0, 1).toUpperCase()
+                  )}
+                </span>
+              ))}
+              {roomMembers.length > 4 && (
+                <span className="voice-bar-more">+{roomMembers.length - 4}</span>
+              )}
+            </span>
+            {streamers.length > 0 && (
+              <span className="live-pill" title={`${streamers.map((s) => s.display_name).join(', ')} yayında`}>
+                <Monitor size={10} /> YAYIN
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            className={`action-pill icon-only ${muted || forceMuted ? 'danger' : ''}`}
+            onClick={toggleMute}
+            title={forceMuted ? 'Yönetici susturdu' : muted ? 'Mikrofonu Aç' : 'Sustur'}
+            aria-label={muted || forceMuted ? 'Mikrofonu aç' : 'Sustur'}
+          >
+            {muted || forceMuted ? <MicOff size={15} /> : <Mic size={15} />}
+          </button>
+          <button
+            type="button"
+            className={`action-pill icon-only ${deafened ? 'danger' : ''}`}
+            onClick={toggleDeafen}
+            title={deafened ? 'Kulaklığı Aç' : 'Sağırlaştır'}
+            aria-label={deafened ? 'Kulaklığı aç' : 'Sağırlaştır'}
+          >
+            {deafened ? <HeadphoneOff size={15} /> : <Headphones size={15} />}
+          </button>
+          <button
+            type="button"
+            className="action-pill icon-only danger"
+            onClick={leaveVoice}
+            title="Ses odasından ayrıl"
+            aria-label="Ses odasından ayrıl"
+          >
+            <PhoneOff size={15} />
+          </button>
+          <button
+            type="button"
+            className="action-pill icon-only"
+            onClick={toggleStage}
+            aria-expanded={false}
+            title="Ses odasını genişlet"
+            aria-label="Ses odasını genişlet"
+          >
+            <ChevronDown size={16} />
+          </button>
+        </div>
+      ) : (
       <div className="voice-stage-header" style={{ position: 'relative' }}>
         <div className="voice-stage-title">
           <Volume2 size={17} className="accent-green" />
-          <span>{voiceChannel?.name || 'Ses Odası'}</span>
+          <span className="voice-stage-name">{roomName}</span>
           <span
             className="badge-subtle"
             title={
@@ -477,6 +605,8 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
               {soundMeta.emoji} {lastSoundboard.display_name}: {soundMeta.label}
             </span>
           )}
+          {/* Phones: top-right of the title row (desktop has it at the end of the actions) */}
+          {renderCollapseButton('in-title')}
         </div>
 
         <div className="voice-actions">
@@ -579,6 +709,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
             <PhoneOff size={15} />
             <span className="btn-label">Ayrıl</span>
           </button>
+          {renderCollapseButton('in-actions')}
         </div>
 
         {soundboardOpen && (
@@ -605,6 +736,7 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
           </div>
         )}
       </div>
+      )}
 
       {firebaseMode && wsStatus !== 'connected' && (
         <div className="audio-unlock-banner" role="status">
@@ -631,8 +763,31 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
         </div>
       )}
 
+      {activeStreamEntry && streamHidden && !stageCollapsed && (
+        <div className="stream-mini-row">
+          <Monitor size={14} className="accent-green" />
+          <span className="stream-mini-label">{activeStreamEntry.label}</span>
+          <span className="muted-text stream-mini-hint">gizli · ses açık</span>
+          <button
+            type="button"
+            className="secondary-btn small"
+            onClick={() => setHiddenStreamKey(null)}
+          >
+            <Eye size={13} /> Göster
+          </button>
+        </div>
+      )}
+
       {activeStreamEntry && (
-        <div className={`stream-theater ${isFullscreen ? 'is-fullscreen' : ''}`} ref={viewerRef}>
+        // Hidden streams stay mounted (just invisible) so the shared game/system audio
+        // keeps playing while the picture is tucked away.
+        <div
+          className={`stream-theater ${isFullscreen ? 'is-fullscreen' : ''} ${
+            !isFullscreen && (stageCollapsed || streamHidden) ? 'tucked' : ''
+          }`}
+          ref={viewerRef}
+          aria-hidden={!isFullscreen && (stageCollapsed || streamHidden) ? true : undefined}
+        >
           <div
             className={`stream-viewport ${zoom > MIN_ZOOM ? 'zoomed' : ''} ${isDragging ? 'dragging' : ''}`}
             ref={viewportRef}
@@ -731,6 +886,17 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
                       title="Yayın Sesi"
                     />
                   </div>
+                )}
+                {!isFullscreen && (
+                  <button
+                    type="button"
+                    className="stream-overlay-btn"
+                    onClick={() => setHiddenStreamKey(streamKey)}
+                    title="Yayını küçült (ses devam eder)"
+                    aria-label="Yayını küçült"
+                  >
+                    <ChevronsUp size={15} />
+                  </button>
                 )}
               </div>
             </div>
