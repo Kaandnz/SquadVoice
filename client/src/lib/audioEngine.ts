@@ -10,6 +10,7 @@ interface RemotePeerAudio {
   audioEl: HTMLAudioElement;
   sourceNode: MediaStreamAudioSourceNode | null;
   gainNode: GainNode | null;
+  limiterNode: DynamicsCompressorNode | null;
   volume: number; // 0.0 to 2.0
 }
 
@@ -332,6 +333,7 @@ export class AudioEngine {
       audioEl,
       sourceNode: null,
       gainNode: null,
+      limiterNode: null,
       volume,
     };
 
@@ -371,11 +373,20 @@ export class AudioEngine {
           }
           peer.sourceNode = ctx.createMediaStreamSource(peer.stream);
           peer.gainNode = ctx.createGain();
+          // Brick-wall limiter: boosting past 100% would otherwise hard-clip loud
+          // speech into crackle/distortion. Transparent below about -3 dBFS.
+          const limiter = ctx.createDynamicsCompressor();
+          limiter.threshold.value = -3;
+          limiter.knee.value = 0;
+          limiter.ratio.value = 20;
+          limiter.attack.value = 0.002;
+          limiter.release.value = 0.2;
+          peer.limiterNode = limiter;
           peer.sourceNode.connect(peer.gainNode);
-          peer.gainNode.connect(ctx.destination);
+          peer.gainNode.connect(limiter);
+          limiter.connect(ctx.destination);
         } catch {
-          peer.sourceNode = null;
-          peer.gainNode = null;
+          this.disconnectBoostChain(peer);
         }
       }
 
@@ -386,19 +397,23 @@ export class AudioEngine {
       }
     }
 
-    if (peer.gainNode) {
-      try {
-        peer.sourceNode?.disconnect();
-        peer.gainNode.disconnect();
-      } catch {
-        // Ignore
-      }
-      peer.sourceNode = null;
-      peer.gainNode = null;
-    }
+    this.disconnectBoostChain(peer);
 
     peer.audioEl.volume = Math.max(0, Math.min(1, effective));
     peer.audioEl.muted = this.deafened || effective === 0;
+  }
+
+  private disconnectBoostChain(peer: RemotePeerAudio) {
+    for (const node of [peer.sourceNode, peer.gainNode, peer.limiterNode]) {
+      try {
+        node?.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    }
+    peer.sourceNode = null;
+    peer.gainNode = null;
+    peer.limiterNode = null;
   }
 
   removePeer(userId: string) {
@@ -406,12 +421,7 @@ export class AudioEngine {
     if (!existing) return;
     existing.audioEl.onplaying = null;
     existing.audioEl.onpause = null;
-    try {
-      existing.sourceNode?.disconnect();
-      existing.gainNode?.disconnect();
-    } catch {
-      // Ignore disconnect errors
-    }
+    this.disconnectBoostChain(existing);
     existing.audioEl.pause();
     existing.audioEl.srcObject = null;
     existing.audioEl.remove();

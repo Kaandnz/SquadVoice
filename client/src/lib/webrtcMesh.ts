@@ -1,5 +1,6 @@
 import type { AudioSettings, PeerStats, ScreenShareOptions } from '../types/protocol';
 import type { AudioEngine } from './audioEngine';
+import { findSelectedCandidatePair } from './rtcStats';
 import { isInitiatorPeer, isPolitePeer, sanitizeRtcPayload, tuneOpusSdp } from './sdp';
 
 interface PeerEntry {
@@ -228,6 +229,26 @@ export class WebRtcMeshManager {
     this.syncPeers(ids);
   }
 
+  /**
+   * Marks the voice sender as high priority so that, when a screen share saturates
+   * the uplink, the bandwidth allocator and pacer starve the video instead of the voice.
+   * Only meaningful after negotiation, so it is called once a description pair is applied.
+   */
+  private applyMicSenderPriority(entry: PeerEntry) {
+    const sender = entry.micSender;
+    if (!sender?.track || typeof sender.getParameters !== 'function') return;
+    try {
+      const params = sender.getParameters();
+      const enc = params.encodings?.[0];
+      if (!enc || (enc.priority === 'high' && enc.networkPriority === 'high')) return;
+      enc.priority = 'high';
+      enc.networkPriority = 'high';
+      sender.setParameters(params).catch(() => {});
+    } catch {
+      // Older engines without encoding priorities
+    }
+  }
+
   private async setLocalWithOpusFallback(
     pc: RTCPeerConnection,
     desc: RTCSessionDescriptionInit,
@@ -451,6 +472,7 @@ export class WebRtcMeshManager {
         this.ensureBidirectionalAudio(entry);
         const answer = await pc.createAnswer();
         await this.setLocalWithOpusFallback(pc, answer);
+        this.applyMicSenderPriority(entry);
         if (pc.localDescription) {
           this.callbacks.sendAnswer(
             fromUserId,
@@ -475,6 +497,7 @@ export class WebRtcMeshManager {
       if (entry.pc.signalingState !== 'have-local-offer') return;
       entry.hasNegotiated = true;
       await entry.pc.setRemoteDescription(description);
+      this.applyMicSenderPriority(entry);
       await this.flushPendingIce(entry);
 
       if (entry.needsRenegotiation) {
@@ -578,6 +601,10 @@ export class WebRtcMeshManager {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
+            // System-audio capture otherwise re-captures this app's own playback (friends'
+            // voices, soundboard), so viewers hear every voice twice with a delay / echo.
+            // Unsupported engines ignore unknown constraints.
+            restrictOwnAudio: true,
           } as MediaTrackConstraints)
         : false,
     });
@@ -726,17 +753,19 @@ export class WebRtcMeshManager {
           }
         });
 
+        // Only the pair ICE actually selected tells us the real path (direct P2P vs TURN)
+        const selectedPair = findSelectedCandidatePair(report);
+        if (selectedPair) {
+          if (typeof selectedPair.currentRoundTripTime === 'number') {
+            rttMs = Math.round(selectedPair.currentRoundTripTime * 1000);
+          }
+          const localType = candidateTypes.get(String(selectedPair.localCandidateId || ''));
+          const remoteType = candidateTypes.get(String(selectedPair.remoteCandidateId || ''));
+          usingRelay = localType === 'relay' || remoteType === 'relay';
+        }
+
         report.forEach((stat) => {
-          if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
-            if (typeof stat.currentRoundTripTime === 'number') {
-              rttMs = Math.round(stat.currentRoundTripTime * 1000);
-            }
-            const localType = candidateTypes.get(String(stat.localCandidateId || ''));
-            const remoteType = candidateTypes.get(String(stat.remoteCandidateId || ''));
-            if (localType === 'relay' || remoteType === 'relay') {
-              usingRelay = true;
-            }
-          } else if (stat.type === 'inbound-rtp') {
+          if (stat.type === 'inbound-rtp') {
             if (stat.kind === 'audio') {
               audioBytes += Number(stat.bytesReceived || 0);
               packetsLost += Number(stat.packetsLost || 0);

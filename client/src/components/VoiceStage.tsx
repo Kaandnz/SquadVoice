@@ -458,8 +458,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
         <div className="voice-stage-title">
           <Volume2 size={17} className="accent-green" />
           <span>{voiceChannel?.name || 'Ses Odası'}</span>
-          <span className="badge-subtle">
-            {turnEnabled ? 'P2P + TURN Hazır' : 'P2P Direct'}
+          <span
+            className="badge-subtle"
+            title={
+              turnEnabled
+                ? 'Ses önce doğrudan P2P gider; TURN yalnızca doğrudan bağlantı kurulamazsa devreye girer. Kişi kartında "TURN" yazıyorsa o kişiyle relay kullanılıyordur.'
+                : 'Doğrudan P2P bağlantı (TURN yapılandırılmamış).'
+            }
+          >
+            {turnEnabled ? 'P2P • TURN yedekte' : 'P2P Direct'}
           </span>
           {lastSoundboard && soundMeta && (
             <span className="soundboard-toast">
