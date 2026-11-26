@@ -122,7 +122,10 @@ export interface ScreenShareOptions {
 
 export interface PeerStats {
   rttMs: number | null;
+  /** Incoming audio packet loss over the last stats interval (not since call start). */
   packetLossPct: number | null;
+  /** Incoming audio jitter as reported by the receiver. */
+  jitterMs: number | null;
   audioKbps: number;
   videoKbps: number;
   videoResolution: string | null;

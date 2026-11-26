@@ -39,6 +39,8 @@ interface PeerEntry {
   cameraStream: MediaStream | null;
   prevAudioBytes: number;
   prevVideoBytes: number;
+  prevPacketsLost: number;
+  prevPacketsReceived: number;
   prevStatsTs: number;
 }
 
@@ -418,6 +420,8 @@ export class WebRtcMeshManager {
       cameraStream: null,
       prevAudioBytes: 0,
       prevVideoBytes: 0,
+      prevPacketsLost: 0,
+      prevPacketsReceived: 0,
       prevStatsTs: 0,
     };
 
@@ -901,12 +905,16 @@ export class WebRtcMeshManager {
           usingRelay = localType === 'relay' || remoteType === 'relay';
         }
 
+        let jitterMs: number | null = null;
         report.forEach((stat) => {
           if (stat.type === 'inbound-rtp') {
             if (stat.kind === 'audio') {
               audioBytes += Number(stat.bytesReceived || 0);
               packetsLost += Number(stat.packetsLost || 0);
               packetsReceived += Number(stat.packetsReceived || 0);
+              if (typeof stat.jitter === 'number') {
+                jitterMs = Math.max(jitterMs ?? 0, Math.round(stat.jitter * 1000));
+              }
             } else if (stat.kind === 'video') {
               videoBytes += Number(stat.bytesReceived || 0);
               if (stat.frameWidth && stat.frameHeight) {
@@ -929,17 +937,24 @@ export class WebRtcMeshManager {
             ? Math.max(0, Math.round(((videoBytes - entry.prevVideoBytes) * 8) / 1000 / dtSec))
             : 0;
 
+        // Loss over this interval only: a cumulative figure hides a call that is breaking
+        // up right now behind a long clean history (and vice versa).
+        const lostNow = Math.max(0, packetsLost - entry.prevPacketsLost);
+        const receivedNow = Math.max(0, packetsReceived - entry.prevPacketsReceived);
+        const intervalPackets = lostNow + receivedNow;
+        const packetLossPct =
+          intervalPackets > 0 ? Math.round((lostNow / intervalPackets) * 1000) / 10 : null;
+
         entry.prevAudioBytes = audioBytes;
         entry.prevVideoBytes = videoBytes;
+        entry.prevPacketsLost = packetsLost;
+        entry.prevPacketsReceived = packetsReceived;
         entry.prevStatsTs = now;
-
-        const totalPackets = packetsLost + packetsReceived;
-        const packetLossPct =
-          totalPackets > 0 ? Math.round((packetsLost / totalPackets) * 1000) / 10 : null;
 
         result[userId] = {
           rttMs,
           packetLossPct,
+          jitterMs,
           audioKbps,
           videoKbps,
           videoResolution,

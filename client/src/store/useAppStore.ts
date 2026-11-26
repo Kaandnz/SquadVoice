@@ -23,6 +23,7 @@ import {
   SERVER_PAGE_SIZE,
   type ChatScope,
 } from '../lib/chatHistory';
+import { appendSample, sampleFromStats, type QualitySample } from '../lib/connectionQuality';
 import { shouldReacquireMic } from '../lib/micDevices';
 import { classifyOwnVoiceEntry } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
@@ -119,6 +120,7 @@ export interface AppState {
   audioSettings: AudioSettings;
   peerVolumes: Record<string, number>;
   peerStats: Record<string, PeerStats>;
+  peerQualityHistory: Record<string, QualitySample[]>;
   turnEnabled: boolean;
   iceServers: RTCIceServer[];
 
@@ -379,7 +381,19 @@ function ensureEngines() {
         });
       },
       onStatsUpdate: (peerStats) => {
-        useAppStore.setState({ peerStats });
+        const now = Date.now();
+        useAppStore.setState((prev) => {
+          // Rolling ~1 minute per peer for the connection-quality sparklines;
+          // peers that left drop out because only current stats are carried over.
+          const peerQualityHistory: Record<string, QualitySample[]> = {};
+          for (const [uid, stats] of Object.entries(peerStats)) {
+            peerQualityHistory[uid] = appendSample(
+              prev.peerQualityHistory[uid],
+              sampleFromStats(stats, now),
+            );
+          }
+          return { peerStats, peerQualityHistory };
+        });
       },
     });
   }
@@ -1113,6 +1127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   audioSettings: loadAudioSettings(),
   peerVolumes: loadPeerVolumes(),
   peerStats: {},
+  peerQualityHistory: {},
   turnEnabled: false,
   iceServers: [],
 

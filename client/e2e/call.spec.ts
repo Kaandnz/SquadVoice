@@ -8,6 +8,10 @@ interface HarnessApi {
   inboundAudio(peerId: string): Promise<{ bytes: number; energy: number }>;
   remoteAudioPlaying(): boolean;
   micPriority(peerId: string): string | null;
+  stats(): Record<
+    string,
+    { rttMs: number | null; packetLossPct: number | null; jitterMs: number | null; usingRelay: boolean }
+  >;
   dropNext(kind: 'offer' | 'answer', count?: number): void;
   reconnect(): void;
   rotateIceServers(): void;
@@ -91,6 +95,16 @@ test.describe('voice call between two peers', () => {
     await expect.poll(() => bob.evaluate(() => window.sv.remoteAudioPlaying())).toBe(true);
     // Voice must outrank screen-share video when the uplink is saturated
     await expect.poll(() => alice.evaluate(() => window.sv.micPriority('bob'))).toBe('high');
+
+    // Stats feeding the connection-quality panel: real numbers, direct path on a LAN
+    await expect
+      .poll(() => bob.evaluate(() => window.sv.stats().alice ?? null))
+      .toMatchObject({
+        jitterMs: expect.any(Number),
+        packetLossPct: expect.any(Number),
+        rttMs: expect.any(Number),
+        usingRelay: false,
+      });
   });
 
   test('recovers when only one side rebuilds its connection', async ({ context }, info) => {
