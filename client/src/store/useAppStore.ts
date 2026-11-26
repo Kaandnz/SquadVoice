@@ -925,6 +925,14 @@ async function initializeFirebaseSession(user: PublicUser) {
       }
     },
     onConnectionStatus: (wsStatus) => useAppStore.setState({ wsStatus }),
+    onVoiceRestoreFailed: (reason) => {
+      if (!useAppStore.getState().activeVoiceChannelId) return;
+      leaveVoiceLocally(
+        reason === 'kicked'
+          ? 'Yönetici tarafından ses odasından çıkarıldın.'
+          : 'Bağlantı geri geldi ama ses odasına yeniden katılınamadı.',
+      );
+    },
   });
 
   setupPttBinding(audioSettings);

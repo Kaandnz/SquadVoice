@@ -104,6 +104,12 @@
         ".validate": "!newData.exists() || root.child('users').child(auth.uid).child('role').val() == 'admin' || data.child('force_muted').val() != true || (newData.child('force_muted').val() == true && newData.child('muted').val() == true)"
       }
     },
+    "voice_kicks": {
+      "$uid": {
+        ".read": "auth != null && $uid == auth.uid",
+        ".write": "auth != null && root.child('users').child(auth.uid).exists() && ((root.child('users').child(auth.uid).child('role').val() == 'admin' && newData.isNumber()) || ($uid == auth.uid && !newData.exists()))"
+      }
+    },
     "signals": {
       "$targetUid": {
         ".read": "auth != null && $targetUid == auth.uid",

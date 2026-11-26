@@ -124,6 +124,7 @@ function callbacks() {
     onKicked: vi.fn(),
     onRtcSignal: vi.fn(),
     onConnectionStatus: vi.fn(),
+    onVoiceRestoreFailed: vi.fn(),
   };
 }
 
@@ -237,6 +238,60 @@ describe('voice entry restore after a connection drop', () => {
     expect(db.disconnectOps).toContainEqual({ op: 'cancel', path: 'voice/uid-me' });
   });
 
+  it('keeps the live entry after a short blip instead of overwriting admin changes', async () => {
+    const backend = await loadBackend();
+    backend.startRealtimeSession(USER, callbacks());
+    emit('.info/connected', true);
+    await backend.joinVoice(USER, 'ch-1', VOICE_STATE);
+    const ours = writesTo('voice/uid-me', 'set').at(-1)?.value as VoiceMemberState;
+    const setsBefore = writesTo('voice/uid-me', 'set').length;
+
+    emit('.info/connected', false);
+    // Server never dropped us; an admin force-muted us meanwhile
+    db.serverValues.set('voice/uid-me', { ...ours, force_muted: true, muted: true });
+    emit('.info/connected', true);
+    await flush();
+
+    expect(writesTo('voice/uid-me', 'set')).toHaveLength(setsBefore);
+    expect(backend.ownsVoice(USER.id)).toBe(true);
+    expect(backend.isVoiceRestorePending(USER.id)).toBe(false);
+  });
+
+  it('does not bring back a call an admin ended while we were offline', async () => {
+    const backend = await loadBackend();
+    const cb = callbacks();
+    backend.startRealtimeSession(USER, cb);
+    emit('.info/connected', true);
+    await backend.joinVoice(USER, 'ch-1', VOICE_STATE);
+    const setsBefore = writesTo('voice/uid-me', 'set').length;
+
+    emit('.info/connected', false);
+    db.serverValues.set('voice_kicks/uid-me', 1764187200000);
+    emit('.info/connected', true);
+    await flush();
+
+    expect(writesTo('voice/uid-me', 'set')).toHaveLength(setsBefore);
+    expect(writesTo('voice_kicks/uid-me', 'remove').length).toBeGreaterThan(0);
+    expect(backend.ownsVoice(USER.id)).toBe(false);
+    expect(cb.onVoiceRestoreFailed).toHaveBeenCalledWith('kicked');
+  });
+
+  it('leaves (and tells the store) when the restore is rejected', async () => {
+    const backend = await loadBackend();
+    const cb = callbacks();
+    backend.startRealtimeSession(USER, cb);
+    emit('.info/connected', true);
+    await backend.joinVoice(USER, 'ch-1', VOICE_STATE);
+
+    emit('.info/connected', false);
+    db.rejectSetFor = 'voice/uid-me';
+    emit('.info/connected', true);
+    await flush();
+
+    expect(cb.onVoiceRestoreFailed).toHaveBeenCalledWith('failed');
+    expect(backend.ownsVoice(USER.id)).toBe(false);
+  });
+
   it('stops restoring after leaving voice', async () => {
     const backend = await loadBackend();
     backend.startRealtimeSession(USER, callbacks());
@@ -271,7 +326,7 @@ describe('sessions of the same account', () => {
   });
 
   it('re-writes shared presence that another session removed, at most every 5s', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date('2026-11-26T20:00:00Z'));
     const backend = await loadBackend();
     backend.startRealtimeSession(USER, callbacks());
@@ -283,8 +338,25 @@ describe('sessions of the same account', () => {
     emit('presence', {});
     expect(presenceWrites()).toBe(afterConnect + 1);
 
+    // Removed again right away: deferred to the end of the interval, not dropped
     emit('presence', {});
     expect(presenceWrites()).toBe(afterConnect + 1);
+    vi.advanceTimersByTime(5000);
+    expect(presenceWrites()).toBe(afterConnect + 2);
+  });
+
+  it('skips a deferred heal when presence came back meanwhile', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date('2026-11-26T20:00:00Z'));
+    const backend = await loadBackend();
+    backend.startRealtimeSession(USER, callbacks());
+    emit('.info/connected', true);
+    const afterConnect = writesTo('presence/uid-me', 'set').length;
+
+    emit('presence', {}); // within 5s of the connect write: deferred
+    emit('presence', { [USER.id]: USER }); // another session re-wrote it
+    vi.advanceTimersByTime(5000);
+    expect(writesTo('presence/uid-me', 'set')).toHaveLength(afterConnect);
   });
 
   it('keeps status changes made after login when re-writing presence', async () => {

@@ -8,6 +8,18 @@ export interface GateOptions {
   hysteresisRatio?: number;
 }
 
+/**
+ * DynamicsCompressorNode always adds "makeup gain" (Web Audio spec: the 0.6 power of the
+ * inverse of the curve's gain at full scale). For a hard-knee limiter that is
+ * (1 / 10^((T + (0 - T) / R) / 20))^0.6. Multiply by the inverse of this to keep the
+ * level the user picked on the volume slider.
+ */
+export function limiterMakeupGain(thresholdDb: number, ratio: number): number {
+  const fullRangeDb = thresholdDb + (0 - thresholdDb) / ratio;
+  const fullRangeGain = 10 ** (fullRangeDb / 20);
+  return (1 / fullRangeGain) ** 0.6;
+}
+
 /** Computes normalized 0..100 RMS microphone level from time-domain PCM samples. */
 export function computeRmsLevel(samples: ArrayLike<number>): number {
   if (!samples.length) return 0;

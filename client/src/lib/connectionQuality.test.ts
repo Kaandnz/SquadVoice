@@ -5,11 +5,21 @@ const s = (t: number, rttMs: number | null = 20) => ({ t, rttMs, lossPct: 0, jit
 
 describe('connection quality', () => {
   it('keeps only the newest samples', () => {
-    let h = appendSample(undefined, s(1), 3);
-    h = appendSample(h, s(2), 3);
-    h = appendSample(h, s(3), 3);
-    h = appendSample(h, s(4), 3);
-    expect(h.map((x) => x.t)).toEqual([2, 3, 4]);
+    let h = appendSample(undefined, s(2000), 3);
+    h = appendSample(h, s(4000), 3);
+    h = appendSample(h, s(6000), 3);
+    h = appendSample(h, s(8000), 3);
+    expect(h.map((x) => x.t)).toEqual([4000, 6000, 8000]);
+  });
+
+  it('replaces the newest point when an extra sample arrives right after it', () => {
+    let h = appendSample(undefined, s(2000, 20), 5);
+    h = appendSample(h, s(4000, 25), 5);
+    h = appendSample(h, s(4100, 90), 5); // ICE-change triggered run 100ms later
+    expect(h.map((x) => [x.t, x.rttMs])).toEqual([
+      [2000, 20],
+      [4100, 90],
+    ]);
   });
 
   it('rates calls by the worst of ping, loss and jitter', () => {

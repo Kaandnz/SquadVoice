@@ -146,8 +146,8 @@ export function ConnectionDetails({
           </tr>
         </thead>
         <tbody>
-          {history.slice(-10).map((h) => (
-            <tr key={h.t}>
+          {history.slice(-10).map((h, i) => (
+            <tr key={`${h.t}-${i}`}>
               <td>{new Date(h.t).toLocaleTimeString('tr-TR')}</td>
               <td>{formatValue(h.rttMs, 0)}</td>
               <td>{formatValue(h.lossPct, 1)}</td>

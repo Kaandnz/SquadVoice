@@ -28,7 +28,7 @@ export function OtherDeviceCallBanner() {
     <div className="other-device-banner" role="status">
       <MonitorSmartphone size={16} className="accent-green" />
       <span>
-        Başka bir cihazda <strong>{roomName}</strong> odasındasın.
+        Başka bir cihazda ya da sekmede <strong>{roomName}</strong> odasındasın.
       </span>
       <button
         type="button"

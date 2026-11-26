@@ -66,6 +66,25 @@ describe('ErrorBoundary', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it('offers only a reload when a lazily loaded part failed to download', () => {
+    function MissingChunk(): never {
+      throw new TypeError(
+        'Failed to fetch dynamically imported module: https://x.web.app/assets/SettingsModal-abc.js',
+      );
+    }
+    act(() => {
+      root.render(
+        <ErrorBoundary area="Ayarlar">
+          <MissingChunk />
+        </ErrorBoundary>,
+      );
+    });
+    const labels = Array.from(container.querySelectorAll('button')).map((b) => b.textContent);
+    expect(container.textContent).toContain('yeni sürümü yayınlandı');
+    expect(labels.some((l) => l?.includes('Sayfayı yenile'))).toBe(true);
+    expect(labels.some((l) => l?.includes('Tekrar dene'))).toBe(false);
+  });
+
   it('uses the app-wide wording without an area', () => {
     act(() => {
       root.render(

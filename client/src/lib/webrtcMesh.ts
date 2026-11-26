@@ -11,8 +11,11 @@ import {
 
 /** How long a 'disconnected' ICE state may last before we actively restart ICE. */
 const ICE_DISCONNECT_GRACE_MS = 4000;
-/** How long we wait for an answer before retracting our offer and sending it again. */
+/** How long we wait for an answer before sending the same offer again (doubles each time). */
 const OFFER_ANSWER_TIMEOUT_MS = 8000;
+const OFFER_ANSWER_TIMEOUT_MAX_MS = 60_000;
+/** Shortest window used for bitrate / packet-loss figures. */
+const MIN_STATS_WINDOW_MS = 1500;
 
 interface PeerEntry {
   userId: string;
@@ -42,6 +45,11 @@ interface PeerEntry {
   prevPacketsLost: number;
   prevPacketsReceived: number;
   prevStatsTs: number;
+  lastAudioKbps: number;
+  lastVideoKbps: number;
+  lastLossPct: number | null;
+  /** Unanswered re-sends of the current offer, for backoff. */
+  offerResends: number;
 }
 
 export interface MeshCallbacks {
@@ -70,6 +78,8 @@ export class WebRtcMeshManager {
   private peerCameraStreamIds = new Map<string, string | null>();
   private peers = new Map<string, PeerEntry>();
   private statsTimer: number | null = null;
+  private statsInFlight = false;
+  private statsRerunRequested = false;
 
   private audioEngine: AudioEngine;
   private callbacks: MeshCallbacks;
@@ -150,10 +160,16 @@ export class WebRtcMeshManager {
    * lost) or rebuilt its connection. Rolling back and re-offering is not: Chrome can
    * reorder m-lines, which a remote that already applied the first offer rejects.
    */
-  private armOfferTimeout(entry: PeerEntry) {
+  private armOfferTimeout(entry: PeerEntry, isResend = false) {
     // Each new offer re-arms this and every applied answer clears it, so a timer that
     // fires while still in have-local-offer always belongs to the unanswered offer.
     this.clearOfferTimer(entry);
+    entry.offerResends = isResend ? entry.offerResends + 1 : 0;
+    // Back off 8s, 16s, 32s, 60s… so a peer we can't reach isn't hammered forever
+    const delay = Math.min(
+      OFFER_ANSWER_TIMEOUT_MS * 2 ** entry.offerResends,
+      OFFER_ANSWER_TIMEOUT_MAX_MS,
+    );
     entry.offerTimer = window.setTimeout(() => {
       entry.offerTimer = null;
       if (this.peers.get(entry.userId) !== entry) return;
@@ -166,8 +182,8 @@ export class WebRtcMeshManager {
         this.localScreenStream?.id ?? null,
         this.localCameraStream?.id ?? null,
       );
-      this.armOfferTimeout(entry);
-    }, OFFER_ANSWER_TIMEOUT_MS);
+      this.armOfferTimeout(entry, true);
+    }, delay);
   }
 
   updateAudioSettings(audioSettings: AudioSettings) {
@@ -423,6 +439,10 @@ export class WebRtcMeshManager {
       prevPacketsLost: 0,
       prevPacketsReceived: 0,
       prevStatsTs: 0,
+      lastAudioKbps: 0,
+      lastVideoKbps: 0,
+      lastLossPct: null,
+      offerResends: 0,
     };
 
     const micTrack = this.localMicStream?.getAudioTracks()[0] ?? null;
@@ -871,7 +891,27 @@ export class WebRtcMeshManager {
     this.callbacks.onStatsUpdate({});
   }
 
+  /**
+   * Collections are serialized: overlapping async runs would interleave the per-peer
+   * "previous counter" bookkeeping. A request during a run triggers one more run after.
+   */
   private async collectStats() {
+    if (this.statsInFlight) {
+      this.statsRerunRequested = true;
+      return;
+    }
+    this.statsInFlight = true;
+    try {
+      do {
+        this.statsRerunRequested = false;
+        await this.collectStatsOnce();
+      } while (this.statsRerunRequested);
+    } finally {
+      this.statsInFlight = false;
+    }
+  }
+
+  private async collectStatsOnce() {
     const result: Record<string, PeerStats> = {};
     const now = performance.now();
 
@@ -927,29 +967,37 @@ export class WebRtcMeshManager {
           }
         });
 
-        const dtSec = entry.prevStatsTs > 0 ? Math.max(0.5, (now - entry.prevStatsTs) / 1000) : 2;
-        const audioKbps =
-          entry.prevStatsTs > 0
-            ? Math.max(0, Math.round(((audioBytes - entry.prevAudioBytes) * 8) / 1000 / dtSec))
-            : 0;
-        const videoKbps =
-          entry.prevStatsTs > 0
-            ? Math.max(0, Math.round(((videoBytes - entry.prevVideoBytes) * 8) / 1000 / dtSec))
-            : 0;
+        // Rates and loss are measured over a window of at least MIN_STATS_WINDOW_MS. Extra
+        // collections (ICE state changes, ontrack) can land milliseconds apart, where one
+        // lost packet out of three would read as 33 % loss; those reuse the last window.
+        const windowMs = now - entry.prevStatsTs;
+        if (entry.prevStatsTs === 0 || windowMs >= MIN_STATS_WINDOW_MS) {
+          const dtSec = entry.prevStatsTs > 0 ? windowMs / 1000 : 0;
+          entry.lastAudioKbps =
+            dtSec > 0
+              ? Math.max(0, Math.round(((audioBytes - entry.prevAudioBytes) * 8) / 1000 / dtSec))
+              : 0;
+          entry.lastVideoKbps =
+            dtSec > 0
+              ? Math.max(0, Math.round(((videoBytes - entry.prevVideoBytes) * 8) / 1000 / dtSec))
+              : 0;
+          // Loss over this window only: a cumulative figure hides a call that is breaking
+          // up right now behind a long clean history (and vice versa).
+          const lostNow = Math.max(0, packetsLost - entry.prevPacketsLost);
+          const receivedNow = Math.max(0, packetsReceived - entry.prevPacketsReceived);
+          const windowPackets = lostNow + receivedNow;
+          entry.lastLossPct =
+            windowPackets > 0 ? Math.round((lostNow / windowPackets) * 1000) / 10 : null;
 
-        // Loss over this interval only: a cumulative figure hides a call that is breaking
-        // up right now behind a long clean history (and vice versa).
-        const lostNow = Math.max(0, packetsLost - entry.prevPacketsLost);
-        const receivedNow = Math.max(0, packetsReceived - entry.prevPacketsReceived);
-        const intervalPackets = lostNow + receivedNow;
-        const packetLossPct =
-          intervalPackets > 0 ? Math.round((lostNow / intervalPackets) * 1000) / 10 : null;
-
-        entry.prevAudioBytes = audioBytes;
-        entry.prevVideoBytes = videoBytes;
-        entry.prevPacketsLost = packetsLost;
-        entry.prevPacketsReceived = packetsReceived;
-        entry.prevStatsTs = now;
+          entry.prevAudioBytes = audioBytes;
+          entry.prevVideoBytes = videoBytes;
+          entry.prevPacketsLost = packetsLost;
+          entry.prevPacketsReceived = packetsReceived;
+          entry.prevStatsTs = now;
+        }
+        const audioKbps = entry.lastAudioKbps;
+        const videoKbps = entry.lastVideoKbps;
+        const packetLossPct = entry.lastLossPct;
 
         result[userId] = {
           rttMs,

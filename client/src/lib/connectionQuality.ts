@@ -17,13 +17,24 @@ export function sampleFromStats(stats: PeerStats, t: number): QualitySample {
   return { t, rttMs: stats.rttMs, lossPct: stats.packetLossPct, jitterMs: stats.jitterMs };
 }
 
-/** Appends a sample, keeping only the newest `max`. Returns a new array. */
+/** Samples closer together than this replace the newest one instead of adding a point. */
+export const MIN_SAMPLE_SPACING_MS = 1500;
+
+/**
+ * Appends a sample, keeping only the newest `max`. Extra stats runs (ICE changes, new
+ * tracks) can arrive moments after a regular one; those update the latest point rather
+ * than squeezing the one-minute window. Returns a new array.
+ */
 export function appendSample(
   history: QualitySample[] | undefined,
   sample: QualitySample,
   max = HISTORY_LENGTH,
 ): QualitySample[] {
-  const next = [...(history ?? []), sample];
+  const prev = history ?? [];
+  const last = prev[prev.length - 1];
+  const base =
+    last && sample.t - last.t < MIN_SAMPLE_SPACING_MS ? prev.slice(0, -1) : prev;
+  const next = [...base, sample];
   return next.length > max ? next.slice(next.length - max) : next;
 }
 

@@ -1,5 +1,14 @@
 import type { AudioSettings } from '../types/protocol';
-import { computeRmsLevel, evaluateNoiseGate, type GateState } from './audioGate';
+import {
+  computeRmsLevel,
+  evaluateNoiseGate,
+  limiterMakeupGain,
+  type GateState,
+} from './audioGate';
+
+const BOOST_LIMITER_THRESHOLD_DB = -3;
+const BOOST_LIMITER_RATIO = 20;
+const BOOST_LIMITER_MAKEUP = limiterMakeupGain(BOOST_LIMITER_THRESHOLD_DB, BOOST_LIMITER_RATIO);
 
 const IS_MOBILE =
   typeof navigator !== 'undefined' &&
@@ -473,9 +482,9 @@ export class AudioEngine {
           // Brick-wall limiter: boosting past 100% would otherwise hard-clip loud
           // speech into crackle/distortion. Transparent below about -3 dBFS.
           const limiter = ctx.createDynamicsCompressor();
-          limiter.threshold.value = -3;
+          limiter.threshold.value = BOOST_LIMITER_THRESHOLD_DB;
           limiter.knee.value = 0;
-          limiter.ratio.value = 20;
+          limiter.ratio.value = BOOST_LIMITER_RATIO;
           limiter.attack.value = 0.002;
           limiter.release.value = 0.2;
           peer.limiterNode = limiter;
@@ -489,7 +498,8 @@ export class AudioEngine {
 
       if (peer.gainNode) {
         peer.audioEl.muted = true;
-        peer.gainNode.gain.value = effective;
+        // Undo the limiter's built-in makeup gain so 110 % on the slider is 110 %
+        peer.gainNode.gain.value = effective / BOOST_LIMITER_MAKEUP;
         return;
       }
     }
