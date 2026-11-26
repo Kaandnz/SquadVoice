@@ -51,6 +51,14 @@ const AVATAR_COLORS = [
 
 const SLOTS = ['1', '2', '3', '4', '5'] as const;
 
+/**
+ * voice/{uid} and signals/{uid} are keyed per account, but one account can have several
+ * sessions open (desktop app, phone, a browser tab). Only the session that actually joined
+ * voice may clean up the voice entry or consume WebRTC signals; otherwise closing any other
+ * session of the same account dropped the live call, and an idle tab could steal offers.
+ */
+let voiceOwnerUid: string | null = null;
+
 function pickAvatarColor(username: string): string {
   let sum = 0;
   for (let i = 0; i < username.length; i += 1) {
@@ -622,8 +630,10 @@ export const firebaseBackend = {
         if (connected) {
           callbacks.onConnectionStatus('connected');
           onDisconnect(presenceRef).remove().catch(() => {});
-          onDisconnect(voiceRef).remove().catch(() => {});
-          onDisconnect(mySignalsRef).remove().catch(() => {});
+          if (voiceOwnerUid === user.id) {
+            onDisconnect(voiceRef).remove().catch(() => {});
+            onDisconnect(mySignalsRef).remove().catch(() => {});
+          }
           set(
             presenceRef,
             sanitizeRtcPayload({
@@ -708,6 +718,8 @@ export const firebaseBackend = {
 
     unsubs.push(
       onChildAdded(mySignalsRef, (snap) => {
+        // Signals belong to whichever session of this account is in voice
+        if (voiceOwnerUid !== user.id) return;
         const payload = snap.val() as RtcSignalPayload | null;
         if (payload) {
           callbacks.onRtcSignal(payload);
@@ -721,8 +733,11 @@ export const firebaseBackend = {
         unsub();
       }
       remove(presenceRef).catch(() => {});
-      remove(voiceRef).catch(() => {});
-      remove(mySignalsRef).catch(() => {});
+      if (voiceOwnerUid === user.id) {
+        voiceOwnerUid = null;
+        remove(voiceRef).catch(() => {});
+        remove(mySignalsRef).catch(() => {});
+      }
       callbacks.onConnectionStatus('disconnected');
     };
   },
@@ -823,7 +838,13 @@ export const firebaseBackend = {
     },
   ): Promise<void> {
     const { rtdb } = getFirebaseServices();
-    await remove(ref(rtdb, `signals/${user.id}`)).catch(() => {});
+    const voiceRef = ref(rtdb, `voice/${user.id}`);
+    const signalsRef = ref(rtdb, `signals/${user.id}`);
+    await remove(signalsRef).catch(() => {});
+    // Claim the entry before writing it so offers that arrive right after are not dropped
+    voiceOwnerUid = user.id;
+    await onDisconnect(voiceRef).remove().catch(() => {});
+    await onDisconnect(signalsRef).remove().catch(() => {});
     const member: VoiceMemberState = {
       user_id: user.id,
       username: user.username,
@@ -841,12 +862,27 @@ export const firebaseBackend = {
       camera_stream_id: state.camera_stream_id ?? null,
       speaking: false,
     };
-    await set(ref(rtdb, `voice/${user.id}`), sanitizeRtcPayload(member));
+    try {
+      await set(voiceRef, sanitizeRtcPayload(member));
+    } catch (err) {
+      firebaseBackend.releaseVoiceOwnership(user.id);
+      throw err;
+    }
   },
 
   async leaveVoice(userId: string): Promise<void> {
     const { rtdb } = getFirebaseServices();
+    firebaseBackend.releaseVoiceOwnership(userId);
     await remove(ref(rtdb, `voice/${userId}`));
+  },
+
+  /** Stops this session from owning voice/{uid} without touching the entry itself. */
+  releaseVoiceOwnership(userId: string): void {
+    if (voiceOwnerUid !== userId) return;
+    voiceOwnerUid = null;
+    const { rtdb } = getFirebaseServices();
+    onDisconnect(ref(rtdb, `voice/${userId}`)).cancel().catch(() => {});
+    onDisconnect(ref(rtdb, `signals/${userId}`)).cancel().catch(() => {});
   },
 
   async updateVoiceState(

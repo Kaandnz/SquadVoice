@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import type { TurnConfig } from '../types/protocol';
+import { ConfirmButton } from './ConfirmButton';
 
 interface AdminPanelModalProps {
   open: boolean;
@@ -243,14 +244,18 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
+                  <ConfirmButton
                     className="action-pill danger"
-                    disabled={busy}
-                    onClick={handleClearMessages}
+                    disabled={busy || !clearChannelId}
+                    onConfirm={handleClearMessages}
+                    armedLabel={
+                      <>
+                        <Trash2 size={14} /> Geri alınamaz — emin misin?
+                      </>
+                    }
                   >
                     <Trash2 size={14} /> Tümünü Sil
-                  </button>
+                  </ConfirmButton>
                 </div>
               </div>
             )}
@@ -325,11 +330,10 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
                           <Shield size={13} />{' '}
                           {member.role === 'admin' ? 'Üye Yap' : 'Admin Yap'}
                         </button>
-                        <button
-                          type="button"
+                        <ConfirmButton
                           className="action-pill danger"
                           disabled={busy}
-                          onClick={async () => {
+                          onConfirm={async () => {
                             setBusy(true);
                             setErrMsg(null);
                             try {
@@ -342,9 +346,14 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
                             }
                           }}
                           title="Sunucudan At"
+                          armedLabel={
+                            <>
+                              <UserMinus size={13} /> Atılsın mı?
+                            </>
+                          }
                         >
                           <UserMinus size={13} /> At
-                        </button>
+                        </ConfirmButton>
                       </div>
                     )}
                   </div>

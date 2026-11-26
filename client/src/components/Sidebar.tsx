@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import type { UserStatus } from '../types/protocol';
+import { ConfirmButton } from './ConfirmButton';
 
 interface SidebarProps {
   mobileOpen: boolean;
@@ -83,12 +84,30 @@ export function Sidebar({
   const voiceChannels = channels.filter((c) => c.kind === 'voice');
   const onlineMap = new Map(onlineUsers.map((u) => [u.id, u]));
 
+  const reportError = (prefix: string, err: unknown) => {
+    useAppStore.setState({
+      toastError: err instanceof Error ? `${prefix}: ${err.message}` : `${prefix}.`,
+    });
+  };
+
   const handleCreateChannel = async (e: FormEvent) => {
     e.preventDefault();
     if (!creatingKind || !newChannelName.trim()) return;
-    await createChannel(newChannelName.trim(), creatingKind);
-    setNewChannelName('');
-    setCreatingKind(null);
+    try {
+      await createChannel(newChannelName.trim(), creatingKind);
+      setNewChannelName('');
+      setCreatingKind(null);
+    } catch (err) {
+      reportError('Kanal oluşturulamadı', err);
+    }
+  };
+
+  const handleDeleteChannel = async (channelId: string) => {
+    try {
+      await deleteChannel(channelId);
+    } catch (err) {
+      reportError('Kanal silinemedi', err);
+    }
   };
 
   const handleRenameSubmit = async (e: FormEvent, channelId: string) => {
@@ -201,14 +220,15 @@ export function Sidebar({
                         </button>
                       )}
                       {user?.role === 'admin' && textChannels.length > 1 && (
-                        <button
-                          type="button"
+                        <ConfirmButton
                           className="icon-btn tiny danger-hover"
+                          armedClassName="channel-delete-armed"
+                          armedLabel="Sil?"
                           title="Kanalı sil"
-                          onClick={() => deleteChannel(ch.id)}
+                          onConfirm={() => handleDeleteChannel(ch.id)}
                         >
                           <Trash2 size={13} />
-                        </button>
+                        </ConfirmButton>
                       )}
                     </>
                   )}
@@ -307,14 +327,15 @@ export function Sidebar({
                         ) : (
                           user?.role === 'admin' &&
                           voiceChannels.length > 1 && (
-                            <button
-                              type="button"
+                            <ConfirmButton
                               className="icon-btn tiny danger-hover"
+                              armedClassName="channel-delete-armed"
+                              armedLabel="Sil?"
                               title="Kanalı sil"
-                              onClick={() => deleteChannel(ch.id)}
+                              onConfirm={() => handleDeleteChannel(ch.id)}
                             >
                               <Trash2 size={13} />
-                            </button>
+                            </ConfirmButton>
                           )
                         )}
                       </>

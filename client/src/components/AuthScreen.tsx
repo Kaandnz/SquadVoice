@@ -11,9 +11,9 @@ export function AuthScreen() {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [inviteCode, setInviteCode] = useState(
-    import.meta.env.VITE_DEFAULT_INVITE_CODE || '',
-  );
+  // Never prefill the real code: it is the only thing gating sign-ups, and anything
+  // baked into the bundle is readable by whoever opens the site.
+  const [inviteCode, setInviteCode] = useState('');
   const [customUrl, setCustomUrl] = useState(serverUrl);
   const [showServerField, setShowServerField] = useState(!firebaseMode && isTauriRuntime());
   const [localError, setLocalError] = useState<string | null>(null);
@@ -177,7 +177,7 @@ export function AuthScreen() {
                 type="text"
                 value={inviteCode}
                 onChange={(e) => setInviteCode(e.target.value)}
-                placeholder="Sunucu davet kodu (örn. SQUAD-2026)"
+                placeholder="Arkadaşından aldığın davet kodu"
                 required
               />
             </label>
