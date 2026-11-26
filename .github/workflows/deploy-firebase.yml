@@ -1,0 +1,102 @@
+name: Deploy to Firebase
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Validate database.rules.json
+        run: node -e "JSON.parse(require('fs').readFileSync('database.rules.json', 'utf8')); console.log('database.rules.json valid')"
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Run client tests
+        working-directory: client
+        run: npm test
+
+      - name: Verify required secrets for deploy
+        if: github.event_name != 'pull_request'
+        env:
+          HAS_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_DATABASE_URL: ${{ secrets.VITE_FIREBASE_DATABASE_URL || vars.VITE_FIREBASE_DATABASE_URL }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID }}
+        run: |
+          missing=()
+          if [ "$HAS_FIREBASE_SERVICE_ACCOUNT" != "true" ]; then
+            missing+=("FIREBASE_SERVICE_ACCOUNT")
+          fi
+          for var_name in \
+            VITE_FIREBASE_API_KEY \
+            VITE_FIREBASE_AUTH_DOMAIN \
+            VITE_FIREBASE_DATABASE_URL \
+            VITE_FIREBASE_PROJECT_ID \
+            VITE_FIREBASE_APP_ID
+          do
+            if [ -z "${!var_name}" ]; then
+              missing+=("$var_name")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required GitHub Secrets/Variables for Firebase deploy: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Build client
+        working-directory: client
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_DATABASE_URL: ${{ secrets.VITE_FIREBASE_DATABASE_URL || vars.VITE_FIREBASE_DATABASE_URL }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET || vars.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID }}
+          VITE_DEFAULT_INVITE_CODE: ${{ secrets.VITE_DEFAULT_INVITE_CODE || vars.VITE_DEFAULT_INVITE_CODE || 'SQUAD-2026' }}
+          VITE_TURN_WORKER_URL: ${{ secrets.VITE_TURN_WORKER_URL || vars.VITE_TURN_WORKER_URL }}
+        run: npm run build
+
+      - name: Authenticate with Google Cloud
+        if: github.event_name != 'pull_request'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          create_credentials_file: true
+
+      - name: Deploy Hosting and Realtime Database Rules
+        if: github.event_name != 'pull_request'
+        env:
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID }}
+        run: |
+          PROJECT_ID="${VITE_FIREBASE_PROJECT_ID:-squadvoice-kaandnz}"
+          npx -y firebase-tools@latest deploy --only hosting,database --project "$PROJECT_ID" --non-interactive

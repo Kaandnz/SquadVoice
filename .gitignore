@@ -1,0 +1,31 @@
+# Rust
+/target
+server/target
+server/data
+server/.env
+
+# Client / Node
+client/node_modules
+client/dist
+client/.env
+client/.env.local
+
+# Firebase
+.firebase/
+
+# Tauri
+client/src-tauri/target
+client/src-tauri/gen
+
+# OS
+.DS_Store
+*.log
+
+# Cloudflare Worker local dev
+cloudflare-turn-worker/.dev.vars
+cloudflare-turn-worker/.wrangler/
+
+# Service Account Keys / Certificates
+*-firebase-adminsdk-*.json
+*service-account*.json
+*.pem

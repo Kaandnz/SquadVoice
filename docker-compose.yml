@@ -1,0 +1,36 @@
+services:
+  squadvoice:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: squadvoice
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3001
+      - DATA_DIR=/data
+      - STATIC_DIR=/app/static
+      - INVITE_CODE=${INVITE_CODE:-SQUAD-2026}
+      - MAX_USERS=${MAX_USERS:-5}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - CLOUDFLARE_TURN_KEY_ID=${CLOUDFLARE_TURN_KEY_ID:-}
+      - CLOUDFLARE_TURN_API_TOKEN=${CLOUDFLARE_TURN_API_TOKEN:-}
+    volumes:
+      - squadvoice_data:/data
+
+  # Opsiyonel: Domain adresin varsa otomatik ücretsiz HTTPS (Let's Encrypt) için aç:
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   command: caddy reverse-proxy --from senin-domainin.duckdns.org --to squadvoice:3001
+  #   volumes:
+  #     - caddy_data:/data
+
+volumes:
+  squadvoice_data:
+  # caddy_data:
