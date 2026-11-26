@@ -14,6 +14,7 @@ import {
   saveServerUrl,
 } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
+import { shouldReacquireMic } from '../lib/micDevices';
 import { classifyOwnVoiceEntry } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
 import { SquadWsClient } from '../lib/ws';
@@ -120,6 +121,9 @@ export interface AppState {
   lastSoundboard: SoundboardEvent | null;
 
   toastError: string | null;
+  /** Neutral notice (auto-dismissed), e.g. "Mikrofon değişti". */
+  toastInfo: string | null;
+  micTestActive: boolean;
 
   // Auth & Profile
   setServerUrl: (url: string) => void;
@@ -190,6 +194,8 @@ export interface AppState {
   adminMoveVoice: (targetUid: string, targetChannelId: string) => Promise<void>;
 
   clearToast: () => void;
+  startMicTest: () => Promise<void>;
+  stopMicTest: () => void;
 }
 
 let pttCleanup: (() => void) | null = null;
@@ -266,6 +272,11 @@ function ensureEngines() {
     for (const [uid, vol] of Object.entries(savedVolumes)) {
       audioEngine.setPeerVolume(uid, vol);
     }
+    audioEngine.setMicLostHandler(scheduleMicCheck);
+    audioEngine.setMicTestStoppedHandler(() => {
+      useAppStore.setState({ micTestActive: false });
+    });
+    navigator.mediaDevices?.addEventListener?.('devicechange', scheduleMicCheck);
   }
 
   if (!rtcMesh) {
@@ -364,6 +375,74 @@ function ensureEngines() {
     wsClient = new SquadWsClient(handleWsEvent, (wsStatus) => {
       useAppStore.setState({ wsStatus });
     });
+  }
+}
+
+let toastInfoTimer: number | null = null;
+
+function showInfo(message: string) {
+  if (toastInfoTimer !== null) window.clearTimeout(toastInfoTimer);
+  useAppStore.setState({ toastInfo: message });
+  toastInfoTimer = window.setTimeout(() => {
+    toastInfoTimer = null;
+    useAppStore.setState({ toastInfo: null });
+  }, 5000);
+}
+
+let micCheckTimer: number | null = null;
+let micRecovering = false;
+
+/** devicechange fires in bursts (each device of a headset); check once it settles. */
+function scheduleMicCheck() {
+  if (micCheckTimer !== null) window.clearTimeout(micCheckTimer);
+  micCheckTimer = window.setTimeout(() => {
+    micCheckTimer = null;
+    recoverMicIfNeeded().catch(() => {});
+  }, 600);
+}
+
+/** Re-opens the call's mic when it was unplugged or the system default changed. */
+async function recoverMicIfNeeded() {
+  const s = useAppStore.getState();
+  if (!s.activeVoiceChannelId || !audioEngine || !rtcMesh || micRecovering) return;
+  const track = audioEngine.getMicTrack();
+  const trackSettings = track?.getSettings?.() ?? {};
+  const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+  const needed = shouldReacquireMic({
+    track: track
+      ? {
+          readyState: track.readyState,
+          deviceId: trackSettings.deviceId,
+          groupId: trackSettings.groupId,
+        }
+      : null,
+    selectedDeviceId: s.audioSettings.inputDeviceId,
+    devices,
+  });
+  if (!needed) return;
+
+  micRecovering = true;
+  try {
+    const stream = await audioEngine.acquireMic(useAppStore.getState().audioSettings, {
+      settleMs: 200,
+    });
+    if (!useAppStore.getState().activeVoiceChannelId) {
+      audioEngine.stopMic(); // left the call meanwhile
+      return;
+    }
+    await rtcMesh.setMicStream(stream);
+    syncMicTransmission();
+    const label = stream.getAudioTracks()[0]?.label;
+    showInfo(label ? `Mikrofon değişti: ${label}` : 'Mikrofon yeniden bağlandı.');
+  } catch (err) {
+    useAppStore.setState({
+      toastError:
+        err instanceof Error
+          ? `Mikrofon bulunamadı: ${err.message}`
+          : 'Mikrofon bulunamadı, bir mikrofon takıp tekrar dene.',
+    });
+  } finally {
+    micRecovering = false;
   }
 }
 
@@ -737,7 +816,8 @@ async function initializeFirebaseSession(user: PublicUser) {
         if (status === 'taken-over') {
           // Another device of this account joined: hand the entry over untouched
           firebaseBackend.releaseVoiceOwnership(userId);
-          leaveVoiceLocally('Görüşme başka bir cihazına aktarıldı.');
+          leaveVoiceLocally(null);
+          showInfo('Görüşme başka bir cihazına aktarıldı.');
           return;
         }
         if (status === 'gone' || !myEntry) {
@@ -1005,6 +1085,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastSoundboard: null,
 
   toastError: null,
+  toastInfo: null,
+  micTestActive: false,
 
   setServerUrl: (url) => {
     const saved = saveServerUrl(url);
@@ -1771,5 +1853,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     await firebaseBackend.adminMoveVoice(targetUid, targetChannelId);
   },
 
-  clearToast: () => set({ toastError: null }),
+  clearToast: () => set({ toastError: null, toastInfo: null }),
+
+  startMicTest: async () => {
+    ensureEngines();
+    try {
+      await audioEngine!.startMicTest(get().audioSettings);
+      set({ micTestActive: true });
+    } catch (err) {
+      set({
+        micTestActive: false,
+        toastError:
+          err instanceof Error
+            ? `Mikrofon testi başlatılamadı: ${err.message}`
+            : 'Mikrofon testi başlatılamadı.',
+      });
+    }
+  },
+
+  stopMicTest: () => {
+    audioEngine?.stopMicTest();
+    set({ micTestActive: false });
+  },
 }));

@@ -33,6 +33,15 @@ export class AudioEngine {
   private onSpeakingChange: (speaking: boolean) => void;
   private onMicLevel: (level: number) => void;
   private onAutoplayBlocked: (blocked: boolean) => void;
+  private onMicLost: (() => void) | null = null;
+  private onMicTestStopped: (() => void) | null = null;
+  private micTest: {
+    ownStream: MediaStream | null;
+    source: MediaStreamAudioSourceNode;
+    gain: GainNode;
+    analyser: AnalyserNode | null;
+    timer: number | null;
+  } | null = null;
 
   private vadThreshold = 14; // 1..95
 
@@ -150,6 +159,102 @@ export class AudioEngine {
       await new Promise((r) => window.setTimeout(r, options.settleMs));
     }
 
+    const stream = await this.openMicStream(settings);
+
+    // Transmit the direct native getUserMedia stream so WebRTC uses native C++ AEC3 / NS / AGC
+    this.micStream = stream;
+    for (const track of stream.getAudioTracks()) {
+      // Unplugged headset / revoked device: let the app pick another mic
+      track.addEventListener('ended', () => {
+        if (this.micStream === stream) this.onMicLost?.();
+      });
+    }
+    this.setMicEnabled(this.micTransmissionEnabled);
+    this.setupVad(stream);
+    if (settings.outputDeviceId) {
+      this.setOutputDevice(settings.outputDeviceId).catch(() => {});
+    }
+    return stream;
+  }
+
+  /** Called when the live mic track ends on its own (device unplugged). */
+  setMicLostHandler(handler: (() => void) | null) {
+    this.onMicLost = handler;
+  }
+
+  /** The live mic track, if any (for device-change checks). */
+  getMicTrack(): MediaStreamTrack | null {
+    return this.micStream?.getAudioTracks()[0] ?? null;
+  }
+
+  isMicTestRunning(): boolean {
+    return this.micTest !== null;
+  }
+
+  /**
+   * Plays your own microphone back to you (like Discord's "Let's Check") with a live level.
+   * In a call it uses the very track friends receive, processing included; otherwise it
+   * opens the selected mic just for the test.
+   */
+  async startMicTest(settings: AudioSettings): Promise<void> {
+    this.stopMicTest();
+    const ctx = this.ensureContext();
+    if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
+
+    const liveCallMic =
+      this.micStream?.getAudioTracks().some((t) => t.readyState === 'live') ?? false;
+    const ownStream = liveCallMic ? null : await this.openMicStream(settings);
+    const stream = ownStream ?? this.micStream;
+    if (!stream) throw new Error('Mikrofon açılamadı');
+
+    const source = ctx.createMediaStreamSource(stream);
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+
+    let analyser: AnalyserNode | null = null;
+    let timer: number | null = null;
+    if (ownStream) {
+      // Outside a call the VAD loop isn't running, so feed the level meter ourselves
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+      const tap = analyser;
+      timer = window.setInterval(() => {
+        tap.getFloatTimeDomainData(buf);
+        this.onMicLevel(computeRmsLevel(buf));
+      }, 60);
+    }
+    this.micTest = { ownStream, source, gain, analyser, timer };
+  }
+
+  setMicTestStoppedHandler(handler: (() => void) | null) {
+    this.onMicTestStopped = handler;
+  }
+
+  stopMicTest() {
+    const test = this.micTest;
+    if (!test) return;
+    this.micTest = null;
+    this.onMicTestStopped?.();
+    if (test.timer !== null) window.clearInterval(test.timer);
+    for (const node of [test.source, test.gain, test.analyser]) {
+      try {
+        node?.disconnect();
+      } catch {
+        // Ignore
+      }
+    }
+    if (test.ownStream) {
+      for (const t of test.ownStream.getTracks()) t.stop();
+      if (!this.vadTimer) this.onMicLevel(0);
+    }
+  }
+
+  /** getUserMedia with graceful fallbacks when the saved device or options are unavailable. */
+  private async openMicStream(settings: AudioSettings): Promise<MediaStream> {
     const baseProcessing: MediaTrackConstraints = {
       echoCancellation: settings.echoCancellation,
       noiseSuppression: settings.noiseSuppression,
@@ -185,14 +290,6 @@ export class AudioEngine {
     }
     if (!stream) {
       throw lastError instanceof Error ? lastError : new Error('Mikrofon açılamadı');
-    }
-
-    // Transmit the direct native getUserMedia stream so WebRTC uses native C++ AEC3 / NS / AGC
-    this.micStream = stream;
-    this.setMicEnabled(this.micTransmissionEnabled);
-    this.setupVad(stream);
-    if (settings.outputDeviceId) {
-      this.setOutputDevice(settings.outputDeviceId).catch(() => {});
     }
     return stream;
   }
@@ -429,6 +526,8 @@ export class AudioEngine {
   }
 
   stopMic() {
+    // A test running on the call's mic can't outlive it
+    if (this.micTest && !this.micTest.ownStream) this.stopMicTest();
     if (this.vadTimer !== null) {
       window.clearInterval(this.vadTimer);
       this.vadTimer = null;

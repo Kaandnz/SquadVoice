@@ -11,6 +11,11 @@ interface HarnessApi {
   dropNext(kind: 'offer' | 'answer', count?: number): void;
   reconnect(): void;
   rotateIceServers(): void;
+  swapMic(): Promise<void>;
+  startMicTest(): Promise<void>;
+  stopMicTest(): void;
+  micTestRunning(): boolean;
+  peakMicLevel(): number;
   leave(): void;
 }
 
@@ -58,6 +63,19 @@ async function setupCall(context: BrowserContext, room: string) {
   const bob = await openPeer(context, 'bob', room);
   return { alice, bob };
 }
+
+test.describe('microphone test', () => {
+  test('plays the mic back with a live level meter outside a call', async ({ context }, info) => {
+    const alice = await openPeer(context, 'alice', info.testId);
+    await alice.evaluate(() => window.sv.startMicTest());
+
+    expect(await alice.evaluate(() => window.sv.micTestRunning())).toBe(true);
+    await expect.poll(() => alice.evaluate(() => window.sv.peakMicLevel())).toBeGreaterThan(0);
+
+    await alice.evaluate(() => window.sv.stopMicTest());
+    expect(await alice.evaluate(() => window.sv.micTestRunning())).toBe(false);
+  });
+});
 
 test.describe('voice call between two peers', () => {
   test('connects and carries audio both ways', async ({ context }, info) => {
@@ -124,6 +142,20 @@ test.describe('voice call between two peers', () => {
     await expectAudioFlowing(bob, 'alice');
     expect(await alice.evaluate(() => window.sv.pcId('bob'))).toBe(pcBefore);
     expect(await alice.evaluate(() => window.sv.iceState('bob'))).toMatch(CONNECTED);
+  });
+
+  test('keeps audio flowing when the mic is swapped mid-call', async ({ context }, info) => {
+    const { alice, bob } = await setupCall(context, info.testId);
+    await Promise.all([start(alice, ['bob']), start(bob, ['alice'])]);
+    await expectConnected(alice, 'bob');
+    await expectConnected(bob, 'alice');
+
+    const bobPcBefore = await bob.evaluate(() => window.sv.pcId('alice'));
+    await alice.evaluate(() => window.sv.swapMic());
+
+    await expectAudioFlowing(bob, 'alice');
+    // The new mic is swapped in place; the call is not rebuilt
+    expect(await bob.evaluate(() => window.sv.pcId('alice'))).toBe(bobPcBefore);
   });
 
   test('recovers when an answer is lost in signaling', async ({ context }, info) => {

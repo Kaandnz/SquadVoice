@@ -19,6 +19,7 @@ export function App() {
     authLoading,
     activeVoiceChannelId,
     toastError,
+    toastInfo,
     bootstrap,
     startScreenShare,
     clearToast,
@@ -87,8 +88,16 @@ export function App() {
         </div>
 
         {toastError && (
-          <div className="toast-error">
+          <div className="toast-error" role="alert">
             <span>{toastError}</span>
+            <button type="button" className="icon-btn tiny" onClick={clearToast}>
+              <X size={15} />
+            </button>
+          </div>
+        )}
+        {!toastError && toastInfo && (
+          <div className="toast-info" role="status">
+            <span>{toastInfo}</span>
             <button type="button" className="icon-btn tiny" onClick={clearToast}>
               <X size={15} />
             </button>

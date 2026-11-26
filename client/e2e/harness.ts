@@ -46,9 +46,13 @@ function post(signal: Signal) {
   bus.postMessage(signal);
 }
 
+let peakMicLevel = 0;
+
 const audio = new AudioEngine({
   onSpeakingChange: () => {},
-  onMicLevel: () => {},
+  onMicLevel: (level) => {
+    peakMicLevel = Math.max(peakMicLevel, level);
+  },
   onAutoplayBlocked: () => {},
 });
 
@@ -139,6 +143,20 @@ const api = {
   rotateIceServers() {
     mesh.updateIceServers([{ urls: 'stun:127.0.0.1:9' }]);
   },
+  /** Same path the app takes when a headset is plugged in mid-call. */
+  async swapMic() {
+    const stream = await audio.acquireMic(settings, { settleMs: 50 });
+    await mesh.setMicStream(stream);
+  },
+  async startMicTest() {
+    peakMicLevel = 0;
+    await audio.startMicTest(settings);
+  },
+  stopMicTest() {
+    audio.stopMicTest();
+  },
+  micTestRunning: () => audio.isMicTestRunning(),
+  peakMicLevel: () => peakMicLevel,
   leave() {
     mesh.closeAll();
     audio.destroyAll();

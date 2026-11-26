@@ -780,6 +780,33 @@ button {
   font-size: 0.86rem;
 }
 
+.mic-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.mic-test-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toast-info {
+  margin: 8px 14px 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(88, 101, 242, 0.16);
+  border: 1px solid rgba(88, 101, 242, 0.45);
+  color: #c9cdfb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.86rem;
+}
+
 /* Voice Stage */
 .voice-stage {
   background: var(--bg-1);
