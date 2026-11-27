@@ -2077,6 +2077,15 @@ button {
   overflow-y: auto;
 }
 
+.soundboard-popover.floating {
+  position: fixed;
+  top: auto;
+  right: auto;
+  margin-top: 0;
+  z-index: 55;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.62);
+}
+
 .tiny-pill {
   display: inline-flex;
   align-items: center;
@@ -3366,5 +3375,86 @@ section.voice-stage.collapsed .participant-grid {
   .stream-viewport {
     min-height: 170px;
     max-height: 62vh;
+  }
+}
+
+/* Resizable Voice / Stream Stage split divider */
+section.voice-stage:not(.collapsed) {
+  border-bottom: none;
+}
+
+section.voice-stage.has-custom-height {
+  max-height: none;
+  flex-shrink: 0;
+}
+
+section.voice-stage.has-custom-height.has-stream .stream-theater:not(.is-fullscreen):not(.tucked) {
+  flex: 1 1 180px;
+  min-height: 140px;
+}
+
+section.voice-stage.has-custom-height.has-stream
+  .stream-theater:not(.is-fullscreen):not(.tucked)
+  .stream-viewport {
+  aspect-ratio: auto;
+  min-height: 140px;
+  max-height: none;
+  height: 100%;
+}
+
+section.voice-stage.has-custom-height.has-stream
+  .stream-theater:not(.is-fullscreen):not(.tucked)
+  .stream-video {
+  max-height: none;
+}
+
+.voice-resize-handle {
+  position: relative;
+  height: 10px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 6;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.voice-resize-handle:hover,
+.voice-resize-handle:focus-visible,
+.voice-resize-handle.dragging {
+  background: rgba(88, 101, 242, 0.14);
+  border-bottom-color: rgba(88, 101, 242, 0.65);
+  outline: none;
+}
+
+.voice-resize-grip {
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  transition: background 120ms ease, width 120ms ease;
+}
+
+.voice-resize-handle:hover .voice-resize-grip,
+.voice-resize-handle:focus-visible .voice-resize-grip,
+.voice-resize-handle.dragging .voice-resize-grip {
+  background: var(--accent);
+  width: 64px;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .voice-resize-handle {
+    height: 16px;
+  }
+
+  .voice-resize-grip {
+    width: 52px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.28);
   }
 }

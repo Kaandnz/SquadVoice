@@ -1,11 +1,15 @@
 import {
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   TouchEvent as ReactTouchEvent,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ChevronDown,
   ChevronsUp,
@@ -62,6 +66,10 @@ interface VoiceStageProps {
 }
 
 const STAGE_COLLAPSED_KEY = 'squadvoice.voiceStageCollapsed';
+const STAGE_VOICE_HEIGHT_KEY = 'squadvoice.voiceStageHeightPx';
+const STAGE_STREAM_HEIGHT_KEY = 'squadvoice.voiceStreamHeightPx';
+const MIN_STAGE_HEIGHT = 96;
+const MIN_CHAT_HEIGHT = 150;
 
 function readStageCollapsed(): boolean {
   try {
@@ -76,6 +84,30 @@ function writeStageCollapsed(collapsed: boolean) {
     localStorage.setItem(STAGE_COLLAPSED_KEY, collapsed ? '1' : '0');
   } catch {
     // Private mode / storage full: the toggle still works for this visit
+  }
+}
+
+function readStageHeight(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < MIN_STAGE_HEIGHT) return null;
+    return Math.round(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function writeStageHeight(key: string, heightPx: number | null) {
+  try {
+    if (heightPx === null) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, String(Math.round(heightPx)));
+    }
+  } catch {
+    // Private mode / storage full: resize still works for this session
   }
 }
 
@@ -176,7 +208,29 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const [stageCollapsed, setStageCollapsed] = useState(readStageCollapsed);
   // Id of the stream the user hid; a different stream showing up is visible again
   const [hiddenStreamKey, setHiddenStreamKey] = useState<string | null>(null);
+  const [voiceStageHeightPx, setVoiceStageHeightPx] = useState<number | null>(() =>
+    readStageHeight(STAGE_VOICE_HEIGHT_KEY),
+  );
+  const [streamStageHeightPx, setStreamStageHeightPx] = useState<number | null>(() =>
+    readStageHeight(STAGE_STREAM_HEIGHT_KEY),
+  );
+  const [isResizingStage, setIsResizingStage] = useState(false);
+  const [soundboardPos, setSoundboardPos] = useState<{
+    top: number;
+    left: number;
+    maxHeight: number;
+  } | null>(null);
 
+  const stageRef = useRef<HTMLElement | null>(null);
+  const soundboardBtnRef = useRef<HTMLButtonElement | null>(null);
+  const soundboardPopoverRef = useRef<HTMLDivElement | null>(null);
+  const stageResizeRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    latestHeight: number;
+    forStream: boolean;
+  } | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -232,7 +286,41 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const shouldRenderVideo = Boolean(activeStream && (!isSelfStream || showSelfPreview));
   const streamKey = activeStream ? `${activeStreamId}:${activeStream.id}` : null;
   const streamHidden = Boolean(streamKey && hiddenStreamKey === streamKey);
+  const hasVisibleStream = Boolean(activeStreamEntry && !streamHidden);
+  const activeStageHeightPx = hasVisibleStream ? streamStageHeightPx : voiceStageHeightPx;
   const streamers = roomMembers.filter((m) => m.screen_sharing);
+
+  const clampStageHeight = useCallback((rawHeight: number): number => {
+    const stageEl = stageRef.current;
+    const mainEl =
+      (stageEl?.closest('.main-stage') as HTMLElement | null) ?? stageEl?.parentElement ?? null;
+    const minChat = window.innerHeight < 640 ? 120 : MIN_CHAT_HEIGHT;
+    let maxH = Math.max(MIN_STAGE_HEIGHT + 80, window.innerHeight - minChat - 40);
+    if (stageEl && mainEl) {
+      const mainRect = mainEl.getBoundingClientRect();
+      const stageRect = stageEl.getBoundingClientRect();
+      if (mainRect.height > 0) {
+        maxH = Math.max(MIN_STAGE_HEIGHT, Math.floor(mainRect.bottom - stageRect.top - minChat));
+      }
+    }
+    return Math.max(MIN_STAGE_HEIGHT, Math.min(maxH, Math.round(rawHeight)));
+  }, []);
+
+  const updateSoundboardPosition = useCallback(() => {
+    const btn = soundboardBtnRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 12;
+    const popoverWidth = Math.min(370, vw - margin * 2);
+    const preferredLeft = rect.right - popoverWidth;
+    const left = Math.max(margin, Math.min(preferredLeft, vw - popoverWidth - margin));
+    const preferredTop = rect.bottom + 8;
+    const top = Math.max(margin, Math.min(preferredTop, vh - 180));
+    const maxHeight = Math.max(160, Math.min(480, vh - top - margin));
+    setSoundboardPos({ top, left, maxHeight });
+  }, []);
 
   const toggleStage = () => {
     const next = !stageCollapsed;
@@ -338,9 +426,158 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     return () => el.removeEventListener('wheel', onWheel);
   }, [isFullscreen, shouldRenderVideo]);
 
+  useEffect(() => {
+    if (!activeVoiceChannelId || stageCollapsed) {
+      setSoundboardOpen(false);
+    }
+  }, [activeVoiceChannelId, stageCollapsed]);
+
+  useLayoutEffect(() => {
+    if (!soundboardOpen) {
+      setSoundboardPos(null);
+      return;
+    }
+    updateSoundboardPosition();
+    const onResizeOrScroll = () => updateSoundboardPosition();
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (soundboardPopoverRef.current?.contains(target)) return;
+      if (soundboardBtnRef.current?.contains(target)) return;
+      setSoundboardOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSoundboardOpen(false);
+      }
+    };
+    window.addEventListener('resize', onResizeOrScroll);
+    window.addEventListener('scroll', onResizeOrScroll, true);
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('resize', onResizeOrScroll);
+      window.removeEventListener('scroll', onResizeOrScroll, true);
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [soundboardOpen, updateSoundboardPosition]);
+
+  useEffect(() => {
+    if (!isResizingStage) return;
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+    };
+  }, [isResizingStage]);
+
+  useEffect(() => {
+    if (activeStageHeightPx === null || stageCollapsed || isFullscreen) return;
+    const onWindowResize = () => {
+      const clamped = clampStageHeight(activeStageHeightPx);
+      if (clamped !== activeStageHeightPx) {
+        if (hasVisibleStream) {
+          setStreamStageHeightPx(clamped);
+        } else {
+          setVoiceStageHeightPx(clamped);
+        }
+      }
+    };
+    onWindowResize();
+    window.addEventListener('resize', onWindowResize);
+    return () => window.removeEventListener('resize', onWindowResize);
+  }, [activeStageHeightPx, clampStageHeight, hasVisibleStream, isFullscreen, stageCollapsed]);
+
   if (!activeVoiceChannelId) {
     return null;
   }
+
+  const handleStageResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    const currentHeight = stageRef.current?.getBoundingClientRect().height ?? MIN_STAGE_HEIGHT;
+    stageResizeRef.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startHeight: currentHeight,
+      latestHeight: currentHeight,
+      forStream: hasVisibleStream,
+    };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic events or unsupported environments
+    }
+    setIsResizingStage(true);
+  };
+
+  const handleStageResizePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = stageResizeRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const nextHeight = clampStageHeight(drag.startHeight + (e.clientY - drag.startY));
+    drag.latestHeight = nextHeight;
+    if (drag.forStream) {
+      setStreamStageHeightPx(nextHeight);
+    } else {
+      setVoiceStageHeightPx(nextHeight);
+    }
+    if (soundboardOpen) {
+      updateSoundboardPosition();
+    }
+  };
+
+  const finishStageResize = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = stageResizeRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    stageResizeRef.current = null;
+    setIsResizingStage(false);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore if capture was already released
+    }
+    if (Math.abs(drag.latestHeight - drag.startHeight) >= 2) {
+      writeStageHeight(
+        drag.forStream ? STAGE_STREAM_HEIGHT_KEY : STAGE_VOICE_HEIGHT_KEY,
+        drag.latestHeight,
+      );
+    }
+  };
+
+  const resetStageHeight = () => {
+    if (hasVisibleStream) {
+      setStreamStageHeightPx(null);
+      writeStageHeight(STAGE_STREAM_HEIGHT_KEY, null);
+    } else {
+      setVoiceStageHeightPx(null);
+      writeStageHeight(STAGE_VOICE_HEIGHT_KEY, null);
+    }
+  };
+
+  const handleStageResizeKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const base =
+        activeStageHeightPx ?? stageRef.current?.getBoundingClientRect().height ?? MIN_STAGE_HEIGHT;
+      const next = clampStageHeight(base + (e.key === 'ArrowDown' ? 28 : -28));
+      if (hasVisibleStream) {
+        setStreamStageHeightPx(next);
+        writeStageHeight(STAGE_STREAM_HEIGHT_KEY, next);
+      } else {
+        setVoiceStageHeightPx(next);
+        writeStageHeight(STAGE_VOICE_HEIGHT_KEY, next);
+      }
+    } else if (e.key === 'Home' || e.key === 'Backspace' || e.key === '0') {
+      e.preventDefault();
+      resetStageHeight();
+    }
+  };
 
   const toggleFullscreen = () => {
     if (!isFullscreen) {
@@ -552,9 +789,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     </button>
   );
 
+  const effectiveStageHeight =
+    !stageCollapsed && !isFullscreen && activeStageHeightPx !== null ? activeStageHeightPx : null;
+
   return (
+    <>
     <section
-      className={`voice-stage ${activeStreamEntry ? 'has-stream' : ''} ${stageCollapsed ? 'collapsed' : ''}`}
+      ref={stageRef}
+      className={`voice-stage ${activeStreamEntry ? 'has-stream' : ''} ${stageCollapsed ? 'collapsed' : ''} ${effectiveStageHeight !== null ? 'has-custom-height' : ''} ${isResizingStage ? 'is-resizing' : ''}`}
+      style={effectiveStageHeight !== null ? { height: `${effectiveStageHeight}px` } : undefined}
       onClick={() => {
         if (needsAudioUnlock) unlockAudio().catch(() => {});
       }}
@@ -718,9 +961,12 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
 
           {firebaseMode && (
             <button
+              ref={soundboardBtnRef}
               type="button"
               className={`action-pill ${soundboardOpen ? 'primary' : ''}`}
               onClick={() => setSoundboardOpen((v) => !v)}
+              aria-expanded={soundboardOpen}
+              aria-haspopup="dialog"
               title="Ses Tahtası (Soundboard)"
             >
               <Music2 size={15} />
@@ -760,8 +1006,21 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
           {renderCollapseButton('in-actions')}
         </div>
 
-        {soundboardOpen && (
-          <div className="soundboard-popover wide" onClick={(e) => e.stopPropagation()}>
+        {soundboardOpen &&
+          soundboardPos &&
+          createPortal(
+            <div
+              ref={soundboardPopoverRef}
+              className="soundboard-popover wide floating"
+              role="dialog"
+              aria-label="Ses Tahtası (Soundboard)"
+              style={{
+                top: `${soundboardPos.top}px`,
+                left: `${soundboardPos.left}px`,
+                maxHeight: `${soundboardPos.maxHeight}px`,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
             <div className="row-between" style={{ marginBottom: 8 }}>
               <div className="field-label" style={{ margin: 0 }}>
                 Ses Tahtası (Soundboard)
@@ -1013,8 +1272,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
                 Henüz özel ses eklenmedi. Yukarıdaki <strong>+ Ses Ekle</strong> ile kendi MP3/WAV kliplerini yükleyebilirsin!
               </div>
             )}
-          </div>
-        )}
+            </div>,
+            document.body,
+          )}
       </div>
       )}
 
@@ -1414,5 +1674,24 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
         })}
       </div>
     </section>
+    {!stageCollapsed && !isFullscreen && (
+      <div
+        className={`voice-resize-handle ${isResizingStage ? 'dragging' : ''}`}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Ses ve yayın alanını boyutlandır"
+        tabIndex={0}
+        title="Yukarı veya aşağı sürükleyerek boyutlandır (çift tıkla: otomatik boyut)"
+        onPointerDown={handleStageResizePointerDown}
+        onPointerMove={handleStageResizePointerMove}
+        onPointerUp={finishStageResize}
+        onPointerCancel={finishStageResize}
+        onDoubleClick={resetStageHeight}
+        onKeyDown={handleStageResizeKeyDown}
+      >
+        <span className="voice-resize-grip" aria-hidden="true" />
+      </div>
+    )}
+    </>
   );
 }

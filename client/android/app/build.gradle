@@ -7,7 +7,8 @@ android {
         applicationId "com.squadvoice.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode (project.findProperty('androidVersionCode') ?: 2).toInteger()
+        def appVersionCode = (project.findProperty('androidVersionCode') ?: '2').toString().toInteger()
+        versionCode appVersionCode
         versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
