@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth';
 import {
   get,
+  goOnline,
   limitToLast,
   onChildAdded,
   onDisconnect,
@@ -100,6 +101,8 @@ let voiceEntryCache: VoiceMemberState | null = null;
  * Without this every Wi-Fi blip or phone screen-lock kicked the user out of voice.
  */
 let voiceRestorePending = false;
+/** Hook into the active realtime session so mobile resume can immediately re-verify voice presence. */
+let activeVoiceHealHook: ((userId: string) => void) | null = null;
 
 function isVoiceMember(m: Partial<VoiceMemberState> | null | undefined): m is VoiceMemberState {
   return (
@@ -1145,18 +1148,34 @@ export const firebaseBackend = {
       }, wait);
     };
 
+    let voiceRestoreInFlight = false;
+    let voiceRestoreAttempts = 0;
+    let voiceRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearVoiceRestoreTimer = () => {
+      if (voiceRestoreTimer !== null) {
+        clearTimeout(voiceRestoreTimer);
+        voiceRestoreTimer = null;
+      }
+    };
+
     const abandonVoice = (reason: 'kicked' | 'failed') => {
+      clearVoiceRestoreTimer();
+      voiceRestoreAttempts = 0;
       if (voiceOwnerUid !== user.id || voiceOwnerRoomId !== boundRoomId) return;
       firebaseBackend.releaseVoiceOwnership(user.id);
       callbacks.onVoiceRestoreFailed?.(reason);
     };
 
     const restoreVoiceEntry = async () => {
+      if (voiceRestoreInFlight) return;
       const cached = voiceEntryCache;
-      if (!cached) {
+      if (!cached || voiceOwnerUid !== user.id || voiceOwnerRoomId !== boundRoomId) {
         voiceRestorePending = false;
+        clearVoiceRestoreTimer();
         return;
       }
+      voiceRestoreInFlight = true;
+      clearVoiceRestoreTimer();
       try {
         const [voiceSnap, kickSnap] = await Promise.all([
           get(voiceRef),
@@ -1179,6 +1198,7 @@ export const firebaseBackend = {
         if (isVoiceMember(current) && (!current.session_id || current.session_id === SESSION_ID)) {
           voiceEntryCache = current;
           voiceRestorePending = false;
+          voiceRestoreAttempts = 0;
           return;
         }
 
@@ -1186,12 +1206,41 @@ export const firebaseBackend = {
           voiceRef,
           sanitizeRtcPayload({ ...cached, speaking: false, kicked_by_admin: false }),
         );
+        onDisconnect(voiceRef).remove().catch(() => {});
+        onDisconnect(mySignalsRef).remove().catch(() => {});
         if (voiceOwnerUid === user.id && voiceOwnerRoomId === boundRoomId) {
           voiceRestorePending = false;
+          voiceRestoreAttempts = 0;
         }
-      } catch {
-        remove(voiceRef).catch(() => {});
-        abandonVoice('failed');
+      } catch (err) {
+        if (voiceOwnerUid !== user.id || voiceOwnerRoomId !== boundRoomId) return;
+        const msg = err instanceof Error ? err.message : String(err ?? '');
+        const isPermanentDenied = /permission_denied|permission denied/i.test(msg);
+        if (isPermanentDenied || voiceRestoreAttempts >= 5) {
+          remove(voiceRef).catch(() => {});
+          abandonVoice('failed');
+          return;
+        }
+        // Transient network error while waking up from mobile screen-lock: retry with backoff
+        voiceRestoreAttempts += 1;
+        const retryDelayMs = Math.min(10_000, 1500 * voiceRestoreAttempts);
+        voiceRestoreTimer = setTimeout(() => {
+          voiceRestoreTimer = null;
+          if (voiceOwnerUid === user.id && voiceOwnerRoomId === boundRoomId && voiceRestorePending) {
+            void restoreVoiceEntry();
+          }
+        }, retryDelayMs);
+      } finally {
+        voiceRestoreInFlight = false;
+      }
+    };
+
+    activeVoiceHealHook = (uid: string) => {
+      if (uid !== user.id || voiceOwnerUid !== user.id || voiceOwnerRoomId !== boundRoomId) return;
+      voiceRestoreAttempts = 0;
+      if (voiceRestorePending || !isConnected) {
+        voiceRestorePending = true;
+        void restoreVoiceEntry();
       }
     };
 
@@ -1200,6 +1249,7 @@ export const firebaseBackend = {
         const connected = Boolean(snap.val());
         if (connected) {
           isConnected = true;
+          voiceRestoreAttempts = 0;
           callbacks.onConnectionStatus('connected');
           onDisconnect(presenceRef).remove().catch(() => {});
           writePresence();
@@ -1269,13 +1319,19 @@ export const firebaseBackend = {
       onValue(ref(rtdb, roomPath('voice', boundRoomId)), (snap) => {
         const raw = (snap.val() as Record<string, Partial<VoiceMemberState>> | null) || {};
         const mine = raw[user.id];
-        if (
-          voiceOwnerUid === user.id &&
-          voiceOwnerRoomId === boundRoomId &&
-          !voiceRestorePending &&
-          isVoiceMember(mine)
-        ) {
-          voiceEntryCache = mine;
+        if (voiceOwnerUid === user.id && voiceOwnerRoomId === boundRoomId) {
+          if (isVoiceMember(mine) && !voiceRestorePending) {
+            voiceEntryCache = mine;
+          } else if (!mine && voiceEntryCache) {
+            // Our voice entry disappeared (e.g. mobile screen-lock socket timeout triggered
+            // server onDisconnect before .info/connected flipped). Self-heal instead of
+            // ejecting the user from the voice room; restoreVoiceEntry still honors admin kicks
+            // and multi-device takeovers.
+            voiceRestorePending = true;
+            if (isConnected) {
+              void restoreVoiceEntry();
+            }
+          }
         }
         const list = Object.values(raw)
           .filter(isVoiceMember)
@@ -1335,6 +1391,8 @@ export const firebaseBackend = {
         clearTimeout(presenceHealTimer);
         presenceHealTimer = null;
       }
+      clearVoiceRestoreTimer();
+      activeVoiceHealHook = null;
       remove(presenceRef).catch(() => {});
       if (voiceOwnerUid === user.id && voiceOwnerRoomId === boundRoomId) {
         voiceOwnerUid = null;
@@ -1525,6 +1583,22 @@ export const firebaseBackend = {
 
   isVoiceRestorePending(userId: string): boolean {
     return voiceRestorePending && voiceOwnerUid === userId;
+  },
+
+  /**
+   * Nudges Firebase RTDB back online after a mobile screen-lock / app-switch and
+   * immediately verifies/heals the active voice entry if needed.
+   */
+  ensureOnlineAndHealVoice(userId: string): void {
+    try {
+      const { rtdb } = getFirebaseServices();
+      if (typeof goOnline === 'function') {
+        goOnline(rtdb);
+      }
+    } catch {
+      // Ignore if Firebase is not initialized
+    }
+    activeVoiceHealHook?.(userId);
   },
 
   ownsVoice(userId: string): boolean {

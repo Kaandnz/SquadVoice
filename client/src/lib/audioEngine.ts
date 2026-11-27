@@ -75,6 +75,7 @@ export class AudioEngine {
   private vadOwnsSource = false;
   private vadAnalyser: AnalyserNode | null = null;
   private vadTimer: number | null = null;
+  private vadVisibilityHandler: (() => void) | null = null;
   private gateState: GateState = { open: false, hangoverUntil: 0 };
   private micTransmissionEnabled = true;
   private currentlySpeaking = false;
@@ -343,11 +344,12 @@ export class AudioEngine {
 
   /**
    * Whether sound may go out right now. Fails open: if we can't measure (no metering,
-   * suspended AudioContext after an iOS interruption) we'd rather send background noise
-   * than silently drop someone's voice.
+   * suspended AudioContext after an iOS interruption, or hidden mobile tab where JS timers
+   * are throttled) we'd rather send background noise than silently drop someone's voice.
    */
   private gateAllowsSound(): boolean {
     if (this.gateMode === 'off') return true;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return true;
     const measuring = this.vadAvailable && this.vadCtx?.state === 'running';
     return !measuring || this.gateState.open;
   }
@@ -369,6 +371,10 @@ export class AudioEngine {
     if (this.vadTimer !== null) {
       window.clearInterval(this.vadTimer);
       this.vadTimer = null;
+    }
+    if (this.vadVisibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.vadVisibilityHandler);
+      this.vadVisibilityHandler = null;
     }
     try {
       if (this.vadSource && this.vadAnalyser) {
@@ -924,6 +930,11 @@ export class AudioEngine {
       // Passive tap only — never routed to destination or WebRTC transmit
       this.vadSource.connect(this.vadAnalyser);
       ctx.onstatechange = () => this.applySentTrackEnabled();
+      if (typeof document !== 'undefined') {
+        const onVis = () => this.applySentTrackEnabled();
+        this.vadVisibilityHandler = onVis;
+        document.addEventListener('visibilitychange', onVis);
+      }
 
       const buf = new Float32Array(this.vadAnalyser.fftSize);
       this.vadAvailable = true;

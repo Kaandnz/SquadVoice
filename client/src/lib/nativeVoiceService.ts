@@ -1,11 +1,21 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 interface VoiceCallNativePlugin {
-  start(options: { channelName: string; serverName: string; muted: boolean }): Promise<void>;
-  update(options: { channelName?: string; serverName?: string; muted?: boolean }): Promise<void>;
+  start(options: {
+    channelName: string;
+    serverName: string;
+    muted: boolean;
+    deafened?: boolean;
+  }): Promise<void>;
+  update(options: {
+    channelName?: string;
+    serverName?: string;
+    muted?: boolean;
+    deafened?: boolean;
+  }): Promise<void>;
   stop(): Promise<void>;
   addListener(
-    eventName: 'toggleMute' | 'hangup',
+    eventName: 'toggleMute' | 'toggleDeafen' | 'hangup',
     listenerFunc: () => void,
   ): Promise<PluginListenerHandle>;
 }
@@ -38,15 +48,21 @@ export async function startNativeVoiceService(options: {
   channelName: string;
   serverName: string;
   muted: boolean;
+  deafened?: boolean;
   onToggleMute: () => void;
+  onToggleDeafen?: () => void;
   onHangup: () => void;
 }): Promise<void> {
   if (!isNativeMobileRuntime()) return;
   await clearNativeListeners();
   try {
-    const muteHandle = await VoiceCall.addListener('toggleMute', options.onToggleMute);
-    const hangupHandle = await VoiceCall.addListener('hangup', options.onHangup);
-    listenerHandles = [muteHandle, hangupHandle];
+    const handles: PluginListenerHandle[] = [];
+    handles.push(await VoiceCall.addListener('toggleMute', options.onToggleMute));
+    if (options.onToggleDeafen) {
+      handles.push(await VoiceCall.addListener('toggleDeafen', options.onToggleDeafen));
+    }
+    handles.push(await VoiceCall.addListener('hangup', options.onHangup));
+    listenerHandles = handles;
   } catch {
     // Ignore listener registration errors
   }
@@ -54,6 +70,7 @@ export async function startNativeVoiceService(options: {
     channelName: options.channelName,
     serverName: options.serverName,
     muted: options.muted,
+    deafened: Boolean(options.deafened),
   }).catch(() => {});
 }
 
@@ -61,6 +78,7 @@ export function updateNativeVoiceService(options: {
   channelName?: string;
   serverName?: string;
   muted?: boolean;
+  deafened?: boolean;
 }): void {
   if (!isNativeMobileRuntime()) return;
   VoiceCall.update(options).catch(() => {});

@@ -16,6 +16,11 @@ import {
 
 /** How long a 'disconnected' ICE state may last before we actively restart ICE. */
 const ICE_DISCONNECT_GRACE_MS = 4000;
+/**
+ * Brief grace window before closing a live, still-connected WebRTC peer whose Firebase
+ * voice entry vanished (e.g. a mobile peer's screen-lock socket blip before self-heal).
+ */
+const PEER_LEAVE_GRACE_MS = 6000;
 /** How long we wait for an answer before sending the same offer again (doubles each time). */
 const OFFER_ANSWER_TIMEOUT_MS = 8000;
 const OFFER_ANSWER_TIMEOUT_MAX_MS = 60_000;
@@ -34,6 +39,7 @@ interface PeerEntry {
   watchdogTimer: number | null;
   iceRestartTimer: number | null;
   offerTimer: number | null;
+  leaveGraceTimer: number | null;
   /** SDP o= session id of the remote RTCPeerConnection we are negotiating with. */
   remoteSdpSessionId: string | null;
   queue: Promise<void>;
@@ -165,6 +171,13 @@ export class WebRtcMeshManager {
     if (entry.iceRestartTimer !== null) {
       window.clearTimeout(entry.iceRestartTimer);
       entry.iceRestartTimer = null;
+    }
+  }
+
+  private clearLeaveGraceTimer(entry: PeerEntry) {
+    if (entry.leaveGraceTimer !== null) {
+      window.clearTimeout(entry.leaveGraceTimer);
+      entry.leaveGraceTimer = null;
     }
   }
 
@@ -324,8 +337,25 @@ export class WebRtcMeshManager {
   syncPeers(remoteUserIds: string[]) {
     const desired = new Set(remoteUserIds.filter((id) => id !== this.myUserId));
 
-    for (const existingId of Array.from(this.peers.keys())) {
-      if (!desired.has(existingId)) {
+    for (const [existingId, entry] of Array.from(this.peers.entries())) {
+      if (desired.has(existingId)) {
+        this.clearLeaveGraceTimer(entry);
+        continue;
+      }
+      const ice = entry.pc.iceConnectionState;
+      const conn = entry.pc.connectionState;
+      const stillFlowing =
+        (ice === 'connected' || ice === 'completed') && conn !== 'closed' && conn !== 'failed';
+      if (stillFlowing) {
+        if (entry.leaveGraceTimer === null) {
+          entry.leaveGraceTimer = window.setTimeout(() => {
+            entry.leaveGraceTimer = null;
+            if (this.peers.get(existingId) === entry) {
+              this.closePeer(existingId);
+            }
+          }, PEER_LEAVE_GRACE_MS);
+        }
+      } else {
         this.closePeer(existingId);
       }
     }
@@ -372,6 +402,16 @@ export class WebRtcMeshManager {
     for (const [id, entry] of this.peers.entries()) {
       const ice = entry.pc.iceConnectionState;
       const conn = entry.pc.connectionState;
+      // Kick any remote audio receiver tracks that mobile WebKit/WebView paused while locked
+      try {
+        for (const receiver of entry.pc.getReceivers()) {
+          if (receiver.track && receiver.track.kind === 'audio' && !receiver.track.enabled) {
+            receiver.track.enabled = true;
+          }
+        }
+      } catch {
+        // Ignore receivers unsupported in mock environments
+      }
       if (ice === 'closed' || conn === 'closed') {
         closedIds.push(id);
       } else if (
@@ -388,6 +428,9 @@ export class WebRtcMeshManager {
           } catch {
             // Ignore transient peer errors
           }
+        } else {
+          void this.triggerRenegotiation(entry);
+          healed += 1;
         }
       }
     }
@@ -492,6 +535,7 @@ export class WebRtcMeshManager {
       watchdogTimer: null,
       iceRestartTimer: null,
       offerTimer: null,
+      leaveGraceTimer: null,
       remoteSdpSessionId: null,
       queue: Promise.resolve(),
       makingOffer: false,
@@ -563,6 +607,13 @@ export class WebRtcMeshManager {
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
+      if (
+        entry.leaveGraceTimer !== null &&
+        (state === 'disconnected' || state === 'failed' || state === 'closed')
+      ) {
+        this.closePeer(remoteUserId);
+        return;
+      }
       if (state === 'failed') {
         this.clearIceRestartTimer(entry);
         if (typeof pc.restartIce === 'function') pc.restartIce();
@@ -959,6 +1010,7 @@ export class WebRtcMeshManager {
     }
     this.clearIceRestartTimer(entry);
     this.clearOfferTimer(entry);
+    this.clearLeaveGraceTimer(entry);
     entry.pc.onnegotiationneeded = null;
     entry.pc.onicecandidate = null;
     entry.pc.oniceconnectionstatechange = null;

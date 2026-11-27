@@ -16,7 +16,7 @@ import java.lang.ref.WeakReference;
 
 @CapacitorPlugin(name = "VoiceCall")
 public class VoiceCallPlugin extends Plugin {
-    private static final int REQ_NOTIFICATIONS = 4202;
+    public static final int REQ_NOTIFICATIONS = 4202;
     private static WeakReference<VoiceCallPlugin> activeInstance = new WeakReference<>(null);
 
     @Override
@@ -64,6 +64,7 @@ public class VoiceCallPlugin extends Plugin {
         intent.putExtra(VoiceCallService.EXTRA_CHANNEL_NAME, call.getString("channelName", "Ses Kanalı"));
         intent.putExtra(VoiceCallService.EXTRA_SERVER_NAME, call.getString("serverName", "SquadVoice"));
         intent.putExtra(VoiceCallService.EXTRA_MUTED, call.getBoolean("muted", false));
+        intent.putExtra(VoiceCallService.EXTRA_DEAFENED, call.getBoolean("deafened", false));
         try {
             ContextCompat.startForegroundService(ctx, intent);
         } catch (Exception ignored) {
@@ -91,6 +92,9 @@ public class VoiceCallPlugin extends Plugin {
         }
         if (call.getData().has("muted")) {
             intent.putExtra(VoiceCallService.EXTRA_MUTED, call.getBoolean("muted", false));
+        }
+        if (call.getData().has("deafened")) {
+            intent.putExtra(VoiceCallService.EXTRA_DEAFENED, call.getBoolean("deafened", false));
         }
         try {
             ctx.startService(intent);

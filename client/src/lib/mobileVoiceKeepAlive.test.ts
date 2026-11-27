@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSilentWavDataUrl, MobileVoiceKeepAlive } from './mobileVoiceKeepAlive';
+import {
+  buildKeepAliveWavBuffer,
+  createSilentWavDataUrl,
+  KEEP_ALIVE_WAV_DURATION_SEC,
+  MobileVoiceKeepAlive,
+} from './mobileVoiceKeepAlive';
 
 function makeFakeAudio() {
   const el = document.createElement('audio');
@@ -15,21 +20,41 @@ function makeFakeAudio() {
   });
   el.pause = vi.fn(() => {
     paused = true;
+    el.dispatchEvent(new Event('pause'));
   });
   el.load = vi.fn();
   return el;
 }
 
-describe('createSilentWavDataUrl', () => {
-  it('builds a valid 1-second 8 kHz PCM silent WAV data URI', () => {
-    const uri = createSilentWavDataUrl();
-    expect(uri.startsWith('data:audio/wav;base64,')).toBe(true);
-    const raw = Buffer.from(uri.slice('data:audio/wav;base64,'.length), 'base64');
+describe('buildKeepAliveWavBuffer & createSilentWavDataUrl', () => {
+  it('builds a valid 15-second 8 kHz 16-bit PCM WAV above Chromium duration and audibility minimums', () => {
+    const buf = buildKeepAliveWavBuffer();
+    const raw = Buffer.from(buf);
+    const view = new DataView(buf);
     expect(raw.subarray(0, 4).toString('ascii')).toBe('RIFF');
     expect(raw.subarray(8, 12).toString('ascii')).toBe('WAVE');
-    expect(raw.length).toBe(44 + 8000);
-    expect(raw[44]).toBe(0x80);
-    expect(raw[raw.length - 1]).toBe(0x80);
+
+    const sampleRate = view.getUint32(24, true);
+    const bitsPerSample = view.getUint16(34, true);
+    const dataBytes = view.getUint32(40, true);
+    expect(sampleRate).toBe(8000);
+    expect(bitsPerSample).toBe(16);
+    expect(dataBytes).toBe(sampleRate * KEEP_ALIVE_WAV_DURATION_SEC * 2);
+    expect(KEEP_ALIVE_WAV_DURATION_SEC).toBeGreaterThanOrEqual(5);
+
+    // Verify RMS is above Chromium's -50 dBFS silence threshold yet completely inaudible (< -40 dBFS)
+    let sumSq = 0;
+    const totalSamples = dataBytes / 2;
+    for (let i = 0; i < totalSamples; i += 1) {
+      const normalized = view.getInt16(44 + i * 2, true) / 32768;
+      sumSq += normalized * normalized;
+    }
+    const rmsDb = 20 * Math.log10(Math.sqrt(sumSq / totalSamples));
+    expect(rmsDb).toBeGreaterThan(-50);
+    expect(rmsDb).toBeLessThan(-40);
+
+    const uri = createSilentWavDataUrl();
+    expect(uri.startsWith('data:audio/wav;base64,')).toBe(true);
   });
 });
 
@@ -39,11 +64,13 @@ describe('MobileVoiceKeepAlive', () => {
   let wakeLockReleases: number;
   let fakeAudio: HTMLAudioElement;
   let setMicrophoneActive: ReturnType<typeof vi.fn>;
+  let setPositionState: ReturnType<typeof vi.fn>;
   let mediaSession: {
     metadata: MediaMetadata | null;
     playbackState: 'none' | 'paused' | 'playing';
     setActionHandler: (action: string, handler: (() => void) | null) => void;
     setMicrophoneActive: (active: boolean) => void;
+    setPositionState: (state?: { duration?: number; playbackRate?: number; position?: number }) => void;
   };
   let keepAlive: MobileVoiceKeepAlive;
 
@@ -54,6 +81,7 @@ describe('MobileVoiceKeepAlive', () => {
     wakeLockReleases = 0;
     fakeAudio = makeFakeAudio();
     setMicrophoneActive = vi.fn();
+    setPositionState = vi.fn();
 
     mediaSession = {
       metadata: null,
@@ -62,6 +90,7 @@ describe('MobileVoiceKeepAlive', () => {
         handlers.set(action, handler);
       },
       setMicrophoneActive,
+      setPositionState,
     };
 
     const wakeLock = {
@@ -97,7 +126,7 @@ describe('MobileVoiceKeepAlive', () => {
     vi.useRealTimers();
   });
 
-  it('activates MediaSession call controls, silent keep-alive audio, and WakeLock on start', async () => {
+  it('activates MediaSession lock-screen controls, position state, keep-alive audio, and WakeLock on start', async () => {
     const onToggleMute = vi.fn();
     const onLeaveVoice = vi.fn();
     const onResumeCall = vi.fn();
@@ -115,32 +144,43 @@ describe('MobileVoiceKeepAlive', () => {
     expect(keepAlive.isActive()).toBe(true);
     expect(mediaSession.playbackState).toBe('playing');
     expect(setMicrophoneActive).toHaveBeenCalledWith(true);
+    expect(setPositionState).toHaveBeenCalledWith(
+      expect.objectContaining({ duration: KEEP_ALIVE_WAV_DURATION_SEC, playbackRate: 1 }),
+    );
     expect(fakeAudio.play).toHaveBeenCalledTimes(1);
     expect(wakeLockRequests).toBe(1);
 
-    // Lock-screen call actions work
+    // Lock-screen Spotify-style Play/Pause & call actions work without pausing keep-alive audio
     handlers.get('togglemicrophone')?.();
     expect(onToggleMute).toHaveBeenCalledTimes(1);
 
+    handlers.get('pause')?.();
+    expect(onToggleMute).toHaveBeenCalledTimes(2);
+    expect(mediaSession.playbackState).toBe('playing');
+
     handlers.get('hangup')?.();
     expect(onLeaveVoice).toHaveBeenCalledTimes(1);
+
+    handlers.get('stop')?.();
+    expect(onLeaveVoice).toHaveBeenCalledTimes(2);
 
     // Mute sync updates MediaSession mic indicator
     keepAlive.setMuted(true);
     expect(setMicrophoneActive).toHaveBeenLastCalledWith(false);
 
-    // Stop tears down MediaSession, silent audio, and WakeLock cleanly
+    // Stop tears down MediaSession, keep-alive audio, and WakeLock cleanly
     keepAlive.stop();
     await Promise.resolve();
     expect(keepAlive.isActive()).toBe(false);
     expect(mediaSession.playbackState).toBe('none');
     expect(handlers.get('togglemicrophone')).toBeNull();
     expect(handlers.get('hangup')).toBeNull();
+    expect(handlers.get('stop')).toBeNull();
     expect(fakeAudio.pause).toHaveBeenCalled();
     expect(wakeLockReleases).toBe(1);
   });
 
-  it('re-acquires WakeLock and runs debounced call recovery when returning from background or coming online', async () => {
+  it('auto-resumes keep-alive audio if OS pauses it mid-call and recovers call on foreground resume', async () => {
     const onResumeCall = vi.fn();
 
     keepAlive.start({
@@ -152,11 +192,14 @@ describe('MobileVoiceKeepAlive', () => {
       onResumeCall,
     });
     await Promise.resolve();
+    expect(fakeAudio.play).toHaveBeenCalledTimes(1);
 
-    // Simulate OS pausing audio and releasing wake lock when tab goes hidden
+    // Simulate OS pausing audio when going to background / screen lock
     fakeAudio.pause();
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
+    // Visibility -> hidden immediately nudges keep-alive audio back on
+    expect(fakeAudio.play).toHaveBeenCalledTimes(2);
 
     // Return to foreground + network online fires together -> coalesced into one recovery pass
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
@@ -167,7 +210,6 @@ describe('MobileVoiceKeepAlive', () => {
     vi.advanceTimersByTime(250);
 
     expect(onResumeCall).toHaveBeenCalledTimes(1);
-    expect(fakeAudio.play).toHaveBeenCalledTimes(2);
   });
 
   it('releases a late-resolving WakeLock if the user already left voice', async () => {

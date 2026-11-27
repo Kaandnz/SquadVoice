@@ -521,12 +521,15 @@ async function recoverMicIfNeeded() {
 }
 
 /**
- * Restores mobile/PWA audio, microphone, and any stalled WebRTC peers automatically
- * when returning from background, screen-lock, or a network switch.
+ * Restores mobile/PWA/Android audio, Firebase RTDB socket, microphone, and any stalled
+ * WebRTC peers automatically when returning from background, screen-lock, or a network switch.
  */
 async function recoverCallAfterResume() {
   const s = useAppStore.getState();
   if (!s.activeVoiceChannelId) return;
+  if (s.firebaseMode && s.user) {
+    firebaseBackend.ensureOnlineAndHealVoice(s.user.id);
+  }
   await audioEngine?.unlockAudio().catch(() => {});
   await recoverMicIfNeeded().catch(() => {});
   rtcMesh?.recoverStalledPeers();
@@ -570,7 +573,7 @@ function syncMicTransmission() {
     !s.forceMuted &&
     (!s.audioSettings.pttEnabled || s.pttActive);
   audioEngine?.setMicEnabled(transmit);
-  mobileVoiceKeepAlive.setMuted(!transmit);
+  mobileVoiceKeepAlive.setMuted(!transmit, s.deafened);
 }
 
 function setupPttBinding(settings: AudioSettings) {
@@ -1886,6 +1889,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await audioEngine!.unlockAudio();
       const micStream = await audioEngine!.acquireMic(state.audioSettings);
+      // Mobile Safari / Android Chrome can pause an existing <audio> element when
+      // getUserMedia switches the hardware audio route; immediately kick keep-alive back on.
+      mobileVoiceKeepAlive.ensureKeepAlivePlaying();
       await rtcMesh!.setMicStream(micStream);
     } catch (err) {
       mobileVoiceKeepAlive.stop();
@@ -1939,7 +1945,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       channelName: joinedChannel?.name || 'Ses Kanalı',
       serverName: joinedState.serverName || 'SquadVoice',
       muted: joinedState.muted || joinedState.forceMuted || joinedState.deafened,
+      deafened: joinedState.deafened,
       onToggleMute: () => useAppStore.getState().toggleMute(),
+      onToggleDeafen: () => useAppStore.getState().toggleDeafen(),
       onLeaveVoice: () => useAppStore.getState().leaveVoice(),
       onResumeCall: () => {
         void recoverCallAfterResume();

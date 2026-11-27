@@ -47,6 +47,7 @@ vi.mock('firebase/database', () => {
       const value = db.serverValues.get(r.path) ?? null;
       return { exists: () => value !== null, val: () => value };
     },
+    goOnline: vi.fn(),
     push: (r: { path: string }) => ({ path: `${r.path}/pushed`, key: 'pushed' }),
     query: (r: unknown) => r,
     orderByChild: () => ({}),
@@ -305,6 +306,25 @@ describe('voice entry restore after a connection drop', () => {
     await flush();
 
     expect(writesTo('voice/uid-me', 'set')).toHaveLength(setsBefore);
+  });
+
+  it('self-heals voice entry if server onDisconnect removes it while still connected', async () => {
+    const backend = await loadBackend();
+    const cb = callbacks();
+    backend.startRealtimeSession(USER, cb);
+    emit('.info/connected', true);
+    await backend.joinVoice(USER, 'ch-1', VOICE_STATE);
+    const setsBefore = writesTo('voice/uid-me', 'set').length;
+
+    // Server removed our entry (e.g., mobile screen-lock socket timeout) before .info/connected flipped
+    emit('voice', {});
+    expect(backend.isVoiceRestorePending(USER.id)).toBe(true);
+    await flush();
+
+    expect(writesTo('voice/uid-me', 'set')).toHaveLength(setsBefore + 1);
+    expect(backend.isVoiceRestorePending(USER.id)).toBe(false);
+    expect(backend.ownsVoice(USER.id)).toBe(true);
+    expect(cb.onVoiceRestoreFailed).not.toHaveBeenCalled();
   });
 });
 
