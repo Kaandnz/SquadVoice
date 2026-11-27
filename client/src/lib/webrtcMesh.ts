@@ -357,6 +357,53 @@ export class WebRtcMeshManager {
   }
 
   /**
+   * Heals only peers whose ICE/connection state stalled while the mobile tab was backgrounded
+   * or the screen was locked, leaving already-healthy peers untouched.
+   */
+  recoverStalledPeers(): number {
+    let healed = 0;
+    const closedIds: string[] = [];
+
+    for (const [id, entry] of this.peers.entries()) {
+      const ice = entry.pc.iceConnectionState;
+      const conn = entry.pc.connectionState;
+      if (ice === 'closed' || conn === 'closed') {
+        closedIds.push(id);
+      } else if (
+        ice === 'failed' ||
+        ice === 'disconnected' ||
+        conn === 'failed' ||
+        conn === 'disconnected'
+      ) {
+        this.clearIceRestartTimer(entry);
+        if (typeof entry.pc.restartIce === 'function') {
+          try {
+            entry.pc.restartIce();
+            healed += 1;
+          } catch {
+            // Ignore transient peer errors
+          }
+        }
+      }
+    }
+
+    if (closedIds.length > 0) {
+      const allIds = Array.from(this.peers.keys());
+      for (const id of closedIds) {
+        this.closePeer(id);
+      }
+      this.syncPeers(allIds);
+      for (const id of closedIds) {
+        const rebuilt = this.peers.get(id);
+        if (rebuilt) this.offerNowIfIdle(rebuilt);
+      }
+      healed += closedIds.length;
+    }
+
+    return healed;
+  }
+
+  /**
    * Marks the voice sender as high priority so that, when a screen share saturates
    * the uplink, the bandwidth allocator and pacer starve the video instead of the voice.
    * Only meaningful after negotiation, so it is called once a description pair is applied.

@@ -32,6 +32,7 @@ import {
 } from '../lib/chatHistory';
 import { appendSample, sampleFromStats, type QualitySample } from '../lib/connectionQuality';
 import { shouldReacquireMic } from '../lib/micDevices';
+import { mobileVoiceKeepAlive } from '../lib/mobileVoiceKeepAlive';
 import { classifyOwnVoiceEntry, isSignalFromVoiceSession } from '../lib/voiceSession';
 import { WebRtcMeshManager } from '../lib/webrtcMesh';
 import { SquadWsClient } from '../lib/ws';
@@ -519,11 +520,24 @@ async function recoverMicIfNeeded() {
   }
 }
 
+/**
+ * Restores mobile/PWA audio, microphone, and any stalled WebRTC peers automatically
+ * when returning from background, screen-lock, or a network switch.
+ */
+async function recoverCallAfterResume() {
+  const s = useAppStore.getState();
+  if (!s.activeVoiceChannelId) return;
+  await audioEngine?.unlockAudio().catch(() => {});
+  await recoverMicIfNeeded().catch(() => {});
+  rtcMesh?.recoverStalledPeers();
+}
+
 /** Tears down this device's call state and returns to a text channel if needed. */
 function leaveVoiceLocally(toast: string | null) {
   const st = useAppStore.getState();
   const prevVoiceId = st.activeVoiceChannelId;
   const shouldReturnToText = !st.activeDmUserId && st.activeTextChannelId === prevVoiceId;
+  mobileVoiceKeepAlive.stop();
   rtcMesh?.closeAll();
   audioEngine?.destroyAll();
   subscribeFirebaseSoundboard(null);
@@ -556,6 +570,7 @@ function syncMicTransmission() {
     !s.forceMuted &&
     (!s.audioSettings.pttEnabled || s.pttActive);
   audioEngine?.setMicEnabled(transmit);
+  mobileVoiceKeepAlive.setMuted(!transmit);
 }
 
 function setupPttBinding(settings: AudioSettings) {
@@ -1549,6 +1564,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       pttCleanup();
       pttCleanup = null;
     }
+    mobileVoiceKeepAlive.stop();
     rtcMesh?.closeAll();
     audioEngine?.destroyAll();
 
@@ -1913,8 +1929,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().selectTextChannel(channelId);
     maybePlayUi('join');
 
-    const peers = get()
-      .voiceMembers.filter((m) => m.channel_id === channelId)
+    const joinedState = get();
+    const joinedChannel = joinedState.channels.find((c) => c.id === channelId);
+    mobileVoiceKeepAlive.start({
+      channelName: joinedChannel?.name || 'Ses Kanalı',
+      serverName: joinedState.serverName || 'SquadVoice',
+      muted: joinedState.muted || joinedState.forceMuted || joinedState.deafened,
+      onToggleMute: () => useAppStore.getState().toggleMute(),
+      onLeaveVoice: () => useAppStore.getState().leaveVoice(),
+      onResumeCall: () => {
+        void recoverCallAfterResume();
+      },
+    });
+
+    const peers = joinedState.voiceMembers
+      .filter((m) => m.channel_id === channelId)
       .map((m) => m.user_id);
     rtcMesh?.syncPeers(peers);
   },
@@ -1926,6 +1955,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       !s.activeDmUserId && Boolean(prevVoiceId) && s.activeTextChannelId === prevVoiceId;
 
     selfLeavingVoice = true;
+    mobileVoiceKeepAlive.stop();
     rtcMesh?.closeAll();
     audioEngine?.destroyAll();
     if (s.firebaseMode) {
@@ -2271,6 +2301,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   unlockAudio: async () => {
+    mobileVoiceKeepAlive.ensureKeepAlivePlaying();
     if (!audioEngine) return;
     await audioEngine.unlockAudio();
   },

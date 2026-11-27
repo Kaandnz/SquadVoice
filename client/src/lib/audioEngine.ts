@@ -239,14 +239,21 @@ export class AudioEngine {
     let allPlayed = true;
     try {
       const ctx = this.ensureContext();
-      if (ctx.state === 'suspended') {
+      // Check !== 'running' instead of === 'suspended' so iOS Safari's 'interrupted'
+      // AudioContext state (after phone calls or screen-lock) also resumes cleanly.
+      if (ctx.state !== 'running' && ctx.state !== 'closed') {
         await ctx.resume().catch(() => {});
       }
     } catch {
       // Ignore context errors on mobile
     }
 
-    if (this.aiCtx && this.aiCtx.state === 'suspended' && (this.aiWorklet || this.micTest?.usedAiCtx)) {
+    if (
+      this.aiCtx &&
+      this.aiCtx.state !== 'running' &&
+      this.aiCtx.state !== 'closed' &&
+      (this.aiWorklet || this.micTest?.usedAiCtx)
+    ) {
       await this.aiCtx.resume().catch(() => {});
     }
 
