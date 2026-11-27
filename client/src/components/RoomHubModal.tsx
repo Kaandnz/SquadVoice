@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Link2, Plus, Sparkles, X } from 'lucide-react';
+import { Link2, Plus, X } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
+import { BrandLogo } from './BrandLogo';
 
 interface RoomHubModalProps {
   open: boolean;
@@ -75,7 +76,7 @@ export function RoomHubModal({ open, initialTab = 'join', onClose }: RoomHubModa
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div className="modal-title">
-            <Sparkles size={18} />
+            <BrandLogo size={24} />
             <h3>Oda / Sunucu Ekle</h3>
           </div>
           <button type="button" className="icon-btn" onClick={onClose}>

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { KeyRound, Server, ShieldCheck, Sparkles } from 'lucide-react';
+import { KeyRound, Server, ShieldCheck } from 'lucide-react';
 import {
   extractInviteCode,
   peekPendingInvite,
@@ -9,6 +9,7 @@ import {
 } from '../lib/invite';
 import { isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
+import { BrandLogo } from './BrandLogo';
 
 export function AuthScreen() {
   const { firebaseMode, serverUrl, authError, authLoading, login, register, resetPassword } =
@@ -81,9 +82,7 @@ export function AuthScreen() {
     <div className="auth-shell">
       <div className="auth-card">
         <div className="auth-brand">
-          <div className="brand-badge">
-            <Sparkles size={24} />
-          </div>
+          <BrandLogo size={50} />
           <div>
             <h1>SquadVoice</h1>
             <p>10 kişilik özel odalar, düşük gecikmeli ses &amp; yayın</p>
