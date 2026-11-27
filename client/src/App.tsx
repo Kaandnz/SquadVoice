@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Link2, Menu, Plus, Sparkles, X } from 'lucide-react';
+import { Link2, Menu, Plus, X } from 'lucide-react';
 import { AuthScreen } from './components/AuthScreen';
+import { BrandLogo } from './components/BrandLogo';
 import { ChatPanel } from './components/ChatPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MemberList } from './components/MemberList';
@@ -72,7 +73,8 @@ export function App() {
   if (authLoading && !user) {
     return (
       <div className="loading-screen">
-        <div className="spinner" />
+        <BrandLogo size={58} />
+        <div className="spinner" style={{ marginTop: 14 }} />
         <p>SquadVoice bağlanıyor...</p>
       </div>
     );
@@ -130,9 +132,7 @@ export function App() {
 
         {needsRoom ? (
           <div className="no-room-empty">
-            <div className="brand-badge" style={{ width: 56, height: 56, borderRadius: 16 }}>
-              <Sparkles size={28} />
-            </div>
+            <BrandLogo size={68} />
             <h2>Hoş geldin, {user.display_name}!</h2>
             <p className="muted-text">
               Henüz bir odada değilsin. Arkadaşından gelen davet linkiyle anında katılabilir veya

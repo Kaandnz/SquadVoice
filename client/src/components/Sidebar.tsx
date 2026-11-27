@@ -23,6 +23,7 @@ import { MAX_ROOM_MEMBERS } from '../lib/firebaseBackend';
 import { currentInviteLink } from '../lib/invite';
 import { useAppStore } from '../store/useAppStore';
 import type { SettingsTabId, UserStatus } from '../types/protocol';
+import { BrandLogo } from './BrandLogo';
 import { ConfirmButton } from './ConfirmButton';
 
 interface SidebarProps {
@@ -133,6 +134,10 @@ export function Sidebar({
       <aside className={`sidebar ${firebaseMode ? 'with-rail' : ''} ${mobileOpen ? 'open' : ''}`}>
         {firebaseMode && (
           <div className="server-rail" aria-label="Odalarım / Sunucularım">
+            <div className="server-rail-brand" title="SquadVoice">
+              <BrandLogo size={40} />
+            </div>
+            <div className="server-rail-divider" aria-hidden="true" />
             {rooms.map((room) => {
               const active = room.id === activeRoomId;
               const initials = room.name

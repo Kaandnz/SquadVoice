@@ -96,6 +96,12 @@ button {
   flex-shrink: 0;
 }
 
+.brand-logo-svg {
+  display: block;
+  flex-shrink: 0;
+  filter: drop-shadow(0 6px 16px rgba(67, 56, 202, 0.35));
+}
+
 .auth-brand h1 {
   margin: 0;
   font-size: 1.35rem;
@@ -448,6 +454,21 @@ button {
 
 .server-rail::-webkit-scrollbar {
   display: none;
+}
+
+.server-rail-brand {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.server-rail-divider {
+  width: 28px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+  margin: 2px 0;
 }
 
 .server-rail-btn {
