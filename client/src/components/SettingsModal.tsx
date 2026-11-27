@@ -1,7 +1,12 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Copy, KeyRound, Mic, Settings, Square, X } from 'lucide-react';
+import { Copy, KeyRound, Mic, Settings, Sparkles, Square, X } from 'lucide-react';
 import { dbFromMeterPercent, meterPercent } from '../lib/audioGate';
 import { currentInviteLink } from '../lib/invite';
+import {
+  NOISE_SUPPRESSION_OPTIONS,
+  getNoiseSuppressionLabel,
+  resolveNoiseSuppressionMode,
+} from '../lib/noiseSuppression';
 import type { InputSensitivityMode } from '../types/protocol';
 
 const MANUAL_MIN_DB = -80;
@@ -37,6 +42,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     firebaseMode,
     adminInviteCode,
     audioSettings,
+    noiseSuppressionStatus,
     turnEnabled,
     iceServers,
     serverUrl,
@@ -52,6 +58,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   } = useAppStore();
   const micLevel = useMicLevelStore((s) => s.micLevel);
   const liveThresholdPct = useMicLevelStore((s) => s.gateThreshold);
+  const selectedNoiseMode = resolveNoiseSuppressionMode(audioSettings);
   const sensitivity = audioSettings.inputSensitivity;
   // The level is only measured while in a call or during the mic test
   const metering = micTestActive || Boolean(activeVoiceChannelId);
@@ -261,6 +268,59 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             ))}
           </div>
 
+          <div className="noise-mode-section">
+            <div className="row-between">
+              <div className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Sparkles size={13} />
+                <span>Gürültü Azaltma Modu</span>
+              </div>
+              {metering && (
+                <span
+                  className={`noise-mode-status ${noiseSuppressionStatus.loading ? 'loading' : ''}`}
+                >
+                  {noiseSuppressionStatus.loading
+                    ? 'Filtre yükleniyor...'
+                    : `Aktif: ${getNoiseSuppressionLabel(noiseSuppressionStatus.activeMode)}`}
+                </span>
+              )}
+            </div>
+            <div className="noise-mode-grid" role="radiogroup" aria-label="Gürültü Azaltma Modu">
+              {NOISE_SUPPRESSION_OPTIONS.map((opt) => {
+                const isSelected = selectedNoiseMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    className={`preset-card noise-mode-card ${isSelected ? 'active' : ''}`}
+                    onClick={() =>
+                      updateAudioSettings({
+                        noiseSuppressionMode: opt.id,
+                        noiseSuppression: opt.id !== 'off',
+                      })
+                    }
+                  >
+                    <div className="noise-mode-header">
+                      <strong>{opt.label}</strong>
+                      {opt.badge && (
+                        <span
+                          className={`noise-mode-badge ${opt.id === 'gtcrn' ? 'accent' : ''}`}
+                        >
+                          {opt.badge}
+                        </span>
+                      )}
+                    </div>
+                    <span>{opt.description}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {noiseSuppressionStatus.fallbackMessage && (
+              <div className="noise-mode-warning">{noiseSuppressionStatus.fallbackMessage}</div>
+            )}
+          </div>
+
           <div className="toggle-list">
             <label className="toggle-row">
               <div>
@@ -272,20 +332,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 checked={audioSettings.echoCancellation}
                 onChange={(e) =>
                   updateAudioSettings({ echoCancellation: e.target.checked })
-                }
-              />
-            </label>
-
-            <label className="toggle-row">
-              <div>
-                <strong>Gürültü Azaltma (Noise Suppression)</strong>
-                <p>Klavye, fan ve arka plan gürültüsünü tarayıcı/sistem düzeyinde bastırır.</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={audioSettings.noiseSuppression}
-                onChange={(e) =>
-                  updateAudioSettings({ noiseSuppression: e.target.checked })
                 }
               />
             </label>
@@ -371,6 +417,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               updateAudioSettings({
                 echoCancellation: true,
                 noiseSuppression: true,
+                noiseSuppressionMode: 'standard',
                 autoGainControl: true,
                 opusBitrateKbps: 96,
                 stereo: false,

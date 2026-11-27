@@ -98,6 +98,14 @@ export interface RtcConfigResponse {
 
 export type InputSensitivityMode = 'auto' | 'manual' | 'off';
 
+export type NoiseSuppressionMode = 'off' | 'standard' | 'rnnoise' | 'gtcrn';
+
+export interface NoiseSuppressionStatus {
+  activeMode: NoiseSuppressionMode;
+  loading: boolean;
+  fallbackMessage: string | null;
+}
+
 export interface AudioSettings {
   inputDeviceId: string;
   outputDeviceId: string;
@@ -105,6 +113,7 @@ export interface AudioSettings {
   stereo: boolean;
   echoCancellation: boolean;
   noiseSuppression: boolean;
+  noiseSuppressionMode: NoiseSuppressionMode;
   autoGainControl: boolean;
   /**
    * Input sensitivity (noise gate): 'auto' follows the room's noise, 'manual' uses

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../lib/api';
 import { AudioEngine } from '../lib/audioEngine';
+import { mergeAudioSettings } from '../lib/noiseSuppression';
 import {
   dmPairId,
   getStaticIceServers,
@@ -33,6 +34,7 @@ import type {
   Channel,
   Message,
   MessageReplyRef,
+  NoiseSuppressionStatus,
   PeerStats,
   PublicUser,
   ScreenShareOptions,
@@ -56,6 +58,7 @@ const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   stereo: false,
   echoCancellation: true,
   noiseSuppression: true,
+  noiseSuppressionMode: 'standard',
   autoGainControl: true,
   inputSensitivity: 'auto',
   gateThresholdDb: -50,
@@ -69,7 +72,7 @@ function loadAudioSettings(): AudioSettings {
   try {
     const raw = localStorage.getItem(AUDIO_SETTINGS_KEY);
     if (!raw) return DEFAULT_AUDIO_SETTINGS;
-    return { ...DEFAULT_AUDIO_SETTINGS, ...(JSON.parse(raw) as Partial<AudioSettings>) };
+    return mergeAudioSettings(DEFAULT_AUDIO_SETTINGS, JSON.parse(raw) as Partial<AudioSettings>);
   } catch {
     return DEFAULT_AUDIO_SETTINGS;
   }
@@ -119,6 +122,7 @@ export interface AppState {
   needsAudioUnlock: boolean;
 
   audioSettings: AudioSettings;
+  noiseSuppressionStatus: NoiseSuppressionStatus;
   peerVolumes: Record<string, number>;
   peerStats: Record<string, PeerStats>;
   peerQualityHistory: Record<string, QualitySample[]>;
@@ -287,6 +291,12 @@ function ensureEngines() {
       onGateThreshold: (threshold) => {
         useMicLevelStore.getState().setGateThreshold(threshold);
       },
+      onNoiseSuppressionStatus: (noiseSuppressionStatus) => {
+        useAppStore.setState((prev) => ({
+          noiseSuppressionStatus,
+          toastError: noiseSuppressionStatus.fallbackMessage ?? prev.toastError,
+        }));
+      },
     });
     audioEngine.applySensitivity(loadAudioSettings());
     const savedVolumes = loadPeerVolumes();
@@ -438,7 +448,7 @@ function scheduleMicCheck() {
 async function recoverMicIfNeeded() {
   const s = useAppStore.getState();
   if (!s.activeVoiceChannelId || !audioEngine || !rtcMesh || micRecovering) return;
-  const track = audioEngine.getMicTrack();
+  const track = audioEngine.getHardwareMicTrack();
   const trackSettings = track?.getSettings?.() ?? {};
   const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
   const needed = shouldReacquireMic({
@@ -1111,6 +1121,7 @@ async function initializeAuthenticatedSession(serverUrl: string, token: string, 
 }
 
 const FIREBASE_ACTIVE = isFirebaseEnabled();
+const INITIAL_AUDIO_SETTINGS = loadAudioSettings();
 
 export const useAppStore = create<AppState>((set, get) => ({
   firebaseMode: FIREBASE_ACTIVE,
@@ -1145,7 +1156,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   pttActive: false,
   needsAudioUnlock: false,
 
-  audioSettings: loadAudioSettings(),
+  audioSettings: INITIAL_AUDIO_SETTINGS,
+  noiseSuppressionStatus: {
+    activeMode: INITIAL_AUDIO_SETTINGS.noiseSuppressionMode,
+    loading: false,
+    fallbackMessage: null,
+  },
   peerVolumes: loadPeerVolumes(),
   peerStats: {},
   peerQualityHistory: {},
@@ -1346,6 +1362,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       remoteCameraStreams: {},
       focusedStreamUserId: null,
       peerStats: {},
+      noiseSuppressionStatus: {
+        activeMode: get().audioSettings.noiseSuppressionMode,
+        loading: false,
+        fallbackMessage: null,
+      },
     });
   },
 
@@ -1614,6 +1635,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       focusedStreamUserId: null,
       peerStats: {},
       toastError: null,
+      noiseSuppressionStatus: {
+        activeMode: s.audioSettings.noiseSuppressionMode,
+        loading: false,
+        fallbackMessage: null,
+      },
     });
 
     if (s.firebaseMode && s.user) {
@@ -1853,9 +1879,21 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   updateAudioSettings: async (patch) => {
     const prev = get().audioSettings;
-    const next = { ...prev, ...patch };
+    const next = mergeAudioSettings(prev, patch);
     localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify(next));
-    set({ audioSettings: next });
+    const inVoice = get().activeVoiceChannelId !== null;
+    const testingMic = get().micTestActive;
+    set((state) => ({
+      audioSettings: next,
+      noiseSuppressionStatus:
+        inVoice || testingMic
+          ? state.noiseSuppressionStatus
+          : {
+              activeMode: next.noiseSuppressionMode,
+              loading: false,
+              fallbackMessage: null,
+            },
+    }));
     rtcMesh?.updateAudioSettings(next);
     audioEngine?.applySensitivity(next);
 
@@ -1867,28 +1905,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       await audioEngine?.setOutputDevice(next.outputDeviceId);
     }
 
-    const needsDeviceReacquire =
-      get().activeVoiceChannelId !== null &&
-      (patch.inputDeviceId !== undefined || patch.stereo !== undefined);
+    const micDeviceOrStereoChanged =
+      patch.inputDeviceId !== undefined || patch.stereo !== undefined;
+    const micProcessingChanged =
+      patch.echoCancellation !== undefined ||
+      patch.noiseSuppression !== undefined ||
+      patch.noiseSuppressionMode !== undefined ||
+      patch.autoGainControl !== undefined;
 
-    const needsConstraintUpdate =
-      get().activeVoiceChannelId !== null &&
-      !needsDeviceReacquire &&
-      (patch.echoCancellation !== undefined ||
-        patch.noiseSuppression !== undefined ||
-        patch.autoGainControl !== undefined);
+    const needsDeviceReacquire = inVoice && micDeviceOrStereoChanged;
+    const needsConstraintUpdate = inVoice && !needsDeviceReacquire && micProcessingChanged;
 
     try {
       if (needsDeviceReacquire && audioEngine && rtcMesh) {
         const stream = await audioEngine.acquireMic(next, { settleMs: 120 });
         await rtcMesh.setMicStream(stream);
         syncMicTransmission();
+        if (testingMic) {
+          await audioEngine.startMicTest(next);
+          set({ micTestActive: true });
+        }
       } else if (needsConstraintUpdate && audioEngine && rtcMesh) {
         const { stream, replaced } = await audioEngine.applyAudioConstraints(next);
         if (replaced) {
           await rtcMesh.setMicStream(stream);
         }
         syncMicTransmission();
+        if (replaced && testingMic) {
+          await audioEngine.startMicTest(next);
+          set({ micTestActive: true });
+        }
+      } else if (!inVoice && testingMic && (micDeviceOrStereoChanged || micProcessingChanged) && audioEngine) {
+        await audioEngine.startMicTest(next);
+        set({ micTestActive: true });
       }
     } catch (err) {
       set({

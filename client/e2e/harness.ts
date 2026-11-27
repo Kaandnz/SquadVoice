@@ -25,6 +25,7 @@ const settings: AudioSettings = {
   stereo: false,
   echoCancellation: true,
   noiseSuppression: true,
+  noiseSuppressionMode: 'standard',
   autoGainControl: true,
   inputSensitivity: 'auto',
   gateThresholdDb: -50,

@@ -1,4 +1,9 @@
-import type { AudioSettings, InputSensitivityMode } from '../types/protocol';
+import type {
+  AudioSettings,
+  InputSensitivityMode,
+  NoiseSuppressionMode,
+  NoiseSuppressionStatus,
+} from '../types/protocol';
 import {
   autoGateThreshold,
   effectiveGateMode,
@@ -16,6 +21,15 @@ import {
   leaveCallAudioSession,
   prepareAudioSessionForMic,
 } from './audioSession';
+import {
+  buildMicTrackConstraints,
+  getNoiseSuppressionLabel,
+  isAiNoiseSuppressionMode,
+  isSampleRateCompatible,
+  resolveNoiseSuppressionMode,
+  type AiNoiseSuppressionMode,
+} from './noiseSuppression';
+import { createAiNoiseWorkletNode, type AiNoiseWorkletNode } from './noiseWorklet';
 
 /** How often the mic level / noise gate is evaluated (ms). */
 const GATE_TICK_MS = 20;
@@ -45,9 +59,20 @@ interface RemoteScreenAudio {
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
+  private aiCtx: AudioContext | null = null;
   private hostContainer: HTMLDivElement | null = null;
+
+  private rawMicStream: MediaStream | null = null;
   private micStream: MediaStream | null = null;
-  private vadSource: MediaStreamAudioSourceNode | null = null;
+  private aiSource: MediaStreamAudioSourceNode | null = null;
+  private aiWorklet: AiNoiseWorkletNode | null = null;
+  private aiDestination: MediaStreamAudioDestinationNode | null = null;
+  private activeNoiseMode: NoiseSuppressionMode = 'standard';
+  private micOpSeq = 0;
+
+  private vadCtx: AudioContext | null = null;
+  private vadSource: AudioNode | null = null;
+  private vadOwnsSource = false;
   private vadAnalyser: AnalyserNode | null = null;
   private vadTimer: number | null = null;
   private gateState: GateState = { open: false, hangoverUntil: 0 };
@@ -66,23 +91,27 @@ export class AudioEngine {
   private onSpeakingChange: (speaking: boolean) => void;
   private onMicLevel: (level: number) => void;
   private onAutoplayBlocked: (blocked: boolean) => void;
+  private onNoiseSuppressionStatus: ((status: NoiseSuppressionStatus) => void) | null = null;
   private onMicLost: (() => void) | null = null;
   private onMicTestStopped: (() => void) | null = null;
+  private micTestOpSeq = 0;
   private micTest: {
     ownStream: MediaStream | null;
     source: MediaStreamAudioSourceNode;
+    worklet: AiNoiseWorkletNode | null;
     gain: GainNode;
     analyser: AnalyserNode | null;
     timer: number | null;
+    usedAiCtx: boolean;
   } | null = null;
 
   // Input sensitivity / noise gate. The gate switches the SENT track on and off
-  // (track.enabled), so the browser's native AEC/NS/AGC pipeline stays untouched.
+  // (track.enabled), so the browser's native AEC/NS/AGC (or AI worklet) stays untouched.
   private gateMode: InputSensitivityMode = 'auto';
   private manualThresholdDb = -50;
   private noiseFloorDb = INITIAL_NOISE_FLOOR_DB;
   private lastGateTickMs = 0;
-  /** Clone of the mic track used only for measuring, so a closed gate can still hear you. */
+  /** Clone of the mic track used only for measuring in native mode, so a closed gate can still hear you. */
   private vadTapTrack: MediaStreamTrack | null = null;
   /** False if level metering couldn't be set up: then the gate never blocks (fail open). */
   private vadAvailable = false;
@@ -95,15 +124,22 @@ export class AudioEngine {
     onAutoplayBlocked: (blocked: boolean) => void;
     /** Current gate threshold on the 0..100 meter scale (moves in auto mode). */
     onGateThreshold?: (meterPct: number) => void;
+    /** Active runtime noise suppression mode, loading state, and fallback warnings. */
+    onNoiseSuppressionStatus?: (status: NoiseSuppressionStatus) => void;
   }) {
     this.onSpeakingChange = callbacks.onSpeakingChange;
     this.onMicLevel = callbacks.onMicLevel;
     this.onAutoplayBlocked = callbacks.onAutoplayBlocked;
     this.onGateThreshold = callbacks.onGateThreshold ?? null;
+    this.onNoiseSuppressionStatus = callbacks.onNoiseSuppressionStatus ?? null;
+  }
+
+  private emitNoiseStatus(status: NoiseSuppressionStatus) {
+    this.onNoiseSuppressionStatus?.(status);
   }
 
   private ensureContext(): AudioContext {
-    if (!this.ctx) {
+    if (!this.ctx || this.ctx.state === 'closed') {
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -114,6 +150,45 @@ export class AudioEngine {
       }
     }
     return this.ctx;
+  }
+
+  private ensureAiContext(mode: AiNoiseSuppressionMode): AudioContext {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
+    if (this.aiCtx && this.aiCtx.state !== 'closed') {
+      if (isSampleRateCompatible(mode, this.aiCtx.sampleRate)) {
+        return this.aiCtx;
+      }
+      this.aiCtx.close().catch(() => {});
+      this.aiCtx = null;
+    }
+
+    const attempts: AudioContextOptions[] = [
+      { sampleRate: 48000, latencyHint: 'interactive' },
+      { sampleRate: 48000 },
+    ];
+    if (mode === 'gtcrn') {
+      attempts.push({ sampleRate: 16000 });
+    }
+
+    for (const opts of attempts) {
+      try {
+        const candidate = new AudioCtx(opts);
+        if (isSampleRateCompatible(mode, candidate.sampleRate)) {
+          this.aiCtx = candidate;
+          return candidate;
+        }
+        candidate.close().catch(() => {});
+      } catch {
+        // Try next sample-rate option
+      }
+    }
+
+    const fallback = new AudioCtx();
+    this.aiCtx = fallback;
+    return fallback;
   }
 
   private ensureHostContainer(): HTMLDivElement | null {
@@ -171,6 +246,10 @@ export class AudioEngine {
       // Ignore context errors on mobile
     }
 
+    if (this.aiCtx && this.aiCtx.state === 'suspended' && (this.aiWorklet || this.micTest?.usedAiCtx)) {
+      await this.aiCtx.resume().catch(() => {});
+    }
+
     if (this.micStream) {
       enterCallAudioSession();
     }
@@ -205,9 +284,11 @@ export class AudioEngine {
   async setOutputDevice(deviceId: string) {
     this.outputDeviceId = deviceId || 'default';
     const sinkId = !deviceId || deviceId === 'default' ? '' : deviceId;
-    const ctx = this.ctx as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null;
-    if (ctx && typeof ctx.setSinkId === 'function') {
-      await ctx.setSinkId(sinkId).catch(() => {});
+    for (const maybeCtx of [this.ctx, this.aiCtx]) {
+      const ctx = maybeCtx as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null;
+      if (ctx && typeof ctx.setSinkId === 'function') {
+        await ctx.setSinkId(sinkId).catch(() => {});
+      }
     }
     for (const peer of this.remotePeers.values()) {
       const el = peer.audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
@@ -260,15 +341,214 @@ export class AudioEngine {
    */
   private gateAllowsSound(): boolean {
     if (this.gateMode === 'off') return true;
-    const measuring = this.vadAvailable && this.ctx?.state === 'running';
+    const measuring = this.vadAvailable && this.vadCtx?.state === 'running';
     return !measuring || this.gateState.open;
   }
 
   private applySentTrackEnabled() {
     if (!this.micStream) return;
     const allow = this.micTransmissionEnabled && this.gateAllowsSound();
+    if (allow && this.rawMicStream && this.rawMicStream !== this.micStream) {
+      for (const track of this.rawMicStream.getAudioTracks()) {
+        if (!track.enabled) track.enabled = true;
+      }
+    }
     for (const track of this.micStream.getAudioTracks()) {
       if (track.enabled !== allow) track.enabled = allow;
+    }
+  }
+
+  private teardownVad() {
+    if (this.vadTimer !== null) {
+      window.clearInterval(this.vadTimer);
+      this.vadTimer = null;
+    }
+    try {
+      if (this.vadSource && this.vadAnalyser) {
+        if (this.vadOwnsSource) {
+          this.vadSource.disconnect();
+        } else {
+          this.vadSource.disconnect(this.vadAnalyser);
+        }
+      }
+      this.vadAnalyser?.disconnect();
+    } catch {
+      // Ignore disconnect errors
+    }
+    this.vadCtx = null;
+    this.vadSource = null;
+    this.vadOwnsSource = false;
+    this.vadAnalyser = null;
+    this.vadTapTrack?.stop();
+    this.vadTapTrack = null;
+    this.vadAvailable = false;
+    this.gateState = { open: false, hangoverUntil: 0 };
+    this.lastGateTickMs = 0;
+  }
+
+  private teardownAiPipeline(options?: { suspendContext?: boolean }) {
+    try {
+      this.aiSource?.disconnect();
+    } catch {
+      // Ignore
+    }
+    try {
+      this.aiWorklet?.disconnect();
+      this.aiWorklet?.destroy();
+    } catch {
+      // Ignore
+    }
+    try {
+      if (this.aiDestination) {
+        for (const t of this.aiDestination.stream.getTracks()) {
+          t.stop();
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    this.aiSource = null;
+    this.aiWorklet = null;
+    this.aiDestination = null;
+
+    if (
+      options?.suspendContext !== false &&
+      this.aiCtx &&
+      this.aiCtx.state === 'running' &&
+      !this.micTest?.usedAiCtx
+    ) {
+      this.aiCtx.suspend().catch(() => {});
+    }
+  }
+
+  private async attachMicMode(
+    rawStream: MediaStream,
+    settings: AudioSettings,
+    seq: number,
+  ): Promise<MediaStream> {
+    const requestedMode = resolveNoiseSuppressionMode(settings);
+    this.teardownVad();
+
+    if (!isAiNoiseSuppressionMode(requestedMode)) {
+      this.teardownAiPipeline({ suspendContext: true });
+      this.micStream = rawStream;
+      this.activeNoiseMode = requestedMode;
+      this.setMicEnabled(this.micTransmissionEnabled);
+      this.setupVad(rawStream);
+      this.emitNoiseStatus({
+        activeMode: requestedMode,
+        loading: false,
+        fallbackMessage: null,
+      });
+      return rawStream;
+    }
+
+    this.emitNoiseStatus({
+      activeMode: this.activeNoiseMode,
+      loading: true,
+      fallbackMessage: null,
+    });
+
+    this.teardownAiPipeline({ suspendContext: false });
+
+    let createdWorklet: AiNoiseWorkletNode | null = null;
+    let createdSource: MediaStreamAudioSourceNode | null = null;
+    let createdDest: MediaStreamAudioDestinationNode | null = null;
+
+    try {
+      const aiCtx = this.ensureAiContext(requestedMode);
+      if (aiCtx.state === 'suspended') {
+        await aiCtx.resume();
+      }
+      if (seq !== this.micOpSeq) {
+        return this.micStream ?? rawStream;
+      }
+
+      const maxChannels = !IS_MOBILE && settings.stereo ? 2 : 1;
+      createdWorklet = await createAiNoiseWorkletNode(aiCtx, requestedMode, maxChannels);
+
+      if (seq !== this.micOpSeq) {
+        try {
+          createdWorklet.destroy();
+          createdWorklet.disconnect();
+        } catch {
+          // Ignore stale cleanup error
+        }
+        return this.micStream ?? rawStream;
+      }
+
+      createdSource = aiCtx.createMediaStreamSource(rawStream);
+      createdDest = aiCtx.createMediaStreamDestination();
+      createdSource.connect(createdWorklet);
+      createdWorklet.connect(createdDest);
+
+      // Keep the raw hardware track feeding the AI worklet; mute/PTT/gate controls the output track.
+      for (const t of rawStream.getAudioTracks()) {
+        t.enabled = true;
+      }
+
+      this.aiSource = createdSource;
+      this.aiWorklet = createdWorklet;
+      this.aiDestination = createdDest;
+      this.micStream = createdDest.stream;
+      this.activeNoiseMode = requestedMode;
+
+      this.setMicEnabled(this.micTransmissionEnabled);
+      this.setupVad(createdDest.stream, { ctx: aiCtx, sourceNode: createdWorklet });
+      this.emitNoiseStatus({
+        activeMode: requestedMode,
+        loading: false,
+        fallbackMessage: null,
+      });
+      return createdDest.stream;
+    } catch (err) {
+      try {
+        createdSource?.disconnect();
+        createdWorklet?.disconnect();
+        createdWorklet?.destroy();
+        if (createdDest) {
+          for (const t of createdDest.stream.getTracks()) {
+            t.stop();
+          }
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+      this.teardownAiPipeline({ suspendContext: true });
+
+      if (seq !== this.micOpSeq) {
+        return this.micStream ?? rawStream;
+      }
+
+      // Graceful fallback to native browser noise suppression so the user never loses voice
+      const rawTrack = rawStream.getAudioTracks()[0];
+      if (rawTrack && rawTrack.readyState === 'live' && typeof rawTrack.applyConstraints === 'function') {
+        await rawTrack
+          .applyConstraints({
+            echoCancellation: settings.echoCancellation,
+            noiseSuppression: true,
+            autoGainControl: settings.autoGainControl,
+          })
+          .catch(() => {});
+      }
+
+      this.micStream = rawStream;
+      this.activeNoiseMode = 'standard';
+      this.setMicEnabled(this.micTransmissionEnabled);
+      this.setupVad(rawStream);
+
+      const reason = err instanceof Error ? err.message : '';
+      const modeLabel = getNoiseSuppressionLabel(requestedMode);
+      const fallbackMessage = reason
+        ? `${modeLabel} başlatılamadı (${reason}). Standart moda geçildi.`
+        : `${modeLabel} bu cihazda başlatılamadı. Standart moda geçildi.`;
+
+      this.emitNoiseStatus({
+        activeMode: 'standard',
+        loading: false,
+        fallbackMessage,
+      });
+      return rawStream;
     }
   }
 
@@ -277,29 +557,40 @@ export class AudioEngine {
     options?: { settleMs?: number },
   ): Promise<MediaStream> {
     this.stopMic();
+    const seq = ++this.micOpSeq;
     this.gateMode = effectiveGateMode(settings);
     this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
 
     if (options?.settleMs && options.settleMs > 0) {
       await new Promise((r) => window.setTimeout(r, options.settleMs));
+      if (seq !== this.micOpSeq) {
+        throw new Error('Mikrofon başlatma iptal edildi');
+      }
     }
 
-    const stream = await this.openMicStream(settings);
+    const rawStream = await this.openMicStream(settings);
+    if (seq !== this.micOpSeq) {
+      for (const t of rawStream.getTracks()) {
+        t.stop();
+      }
+      throw new Error('Mikrofon başlatma iptal edildi');
+    }
 
-    // Transmit the direct native getUserMedia stream so WebRTC uses native C++ AEC3 / NS / AGC
-    this.micStream = stream;
-    for (const track of stream.getAudioTracks()) {
+    // Standard / Off modes transmit the direct native getUserMedia stream so WebRTC uses
+    // native C++ AEC3 / NS / AGC; AI modes (RNNoise / GTCRN) route through a 48 kHz WASM AudioWorklet.
+    this.rawMicStream = rawStream;
+    for (const track of rawStream.getAudioTracks()) {
       // Unplugged headset / revoked device: let the app pick another mic
       track.addEventListener('ended', () => {
-        if (this.micStream === stream) this.onMicLost?.();
+        if (this.rawMicStream === rawStream) this.onMicLost?.();
       });
     }
-    this.setMicEnabled(this.micTransmissionEnabled);
-    this.setupVad(stream);
+
+    const outputStream = await this.attachMicMode(rawStream, settings, seq);
     if (settings.outputDeviceId) {
       this.setOutputDevice(settings.outputDeviceId).catch(() => {});
     }
-    return stream;
+    return outputStream;
   }
 
   /** Called when the live mic track ends on its own (device unplugged). */
@@ -307,9 +598,14 @@ export class AudioEngine {
     this.onMicLost = handler;
   }
 
-  /** The live mic track, if any (for device-change checks). */
+  /** The sent mic track, if any (reflects live mute/gate enabled state). */
   getMicTrack(): MediaStreamTrack | null {
     return this.micStream?.getAudioTracks()[0] ?? null;
+  }
+
+  /** The underlying hardware mic track from getUserMedia (for device-change checks). */
+  getHardwareMicTrack(): MediaStreamTrack | null {
+    return this.rawMicStream?.getAudioTracks()[0] ?? this.micStream?.getAudioTracks()[0] ?? null;
   }
 
   isMicTestRunning(): boolean {
@@ -319,48 +615,148 @@ export class AudioEngine {
   /**
    * Plays your own microphone back to you (like Discord's "Let's Check") with a live level.
    * In a call it uses the very track friends receive, processing included; otherwise it
-   * opens the selected mic just for the test.
+   * opens the selected mic just for the test (including any selected AI noise filter).
    */
   async startMicTest(settings: AudioSettings): Promise<void> {
     this.stopMicTest();
-    const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
+    const opSeq = ++this.micTestOpSeq;
 
     const liveCallMic =
       this.micStream?.getAudioTracks().some((t) => t.readyState === 'live') ?? false;
-    const ownStream = liveCallMic ? null : await this.openMicStream(settings);
-    const stream = ownStream ?? this.micStream;
-    if (!stream) throw new Error('Mikrofon açılamadı');
 
-    const source = ctx.createMediaStreamSource(stream);
-    const gain = ctx.createGain();
-    gain.gain.value = 1;
-    source.connect(gain);
-    gain.connect(ctx.destination);
+    if (liveCallMic && this.micStream) {
+      const ctx = this.ensureContext();
+      if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
+      if (opSeq !== this.micTestOpSeq || !this.micStream) return;
 
-    let analyser: AnalyserNode | null = null;
-    let timer: number | null = null;
-    if (ownStream) {
-      // Outside a call the VAD loop isn't running: meter the mic ourselves and apply the
-      // same gate to the playback, so you hear exactly what friends would receive.
-      this.gateMode = effectiveGateMode(settings);
-      this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
-      analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const buf = new Float32Array(analyser.fftSize);
-      const tap = analyser;
-      timer = window.setInterval(() => {
-        tap.getFloatTimeDomainData(buf);
-        const db = levelDb(buf);
-        this.onMicLevel(meterPercent(db));
-        this.processLevel(db, performance.now());
-        const open = this.gateMode === 'off' || this.gateState.open;
-        gain.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, open ? 0.005 : 0.03);
-      }, GATE_TICK_MS);
+      const source = ctx.createMediaStreamSource(this.micStream);
+      const gain = ctx.createGain();
+      gain.gain.value = 1;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      // In a call the test plays the sent track itself, which the gate already switches
+      this.micTest = {
+        ownStream: null,
+        source,
+        worklet: null,
+        gain,
+        analyser: null,
+        timer: null,
+        usedAiCtx: false,
+      };
+      return;
     }
-    // In a call the test plays the sent track itself, which the gate already switches
-    this.micTest = { ownStream, source, gain, analyser, timer };
+
+    const requestedMode = resolveNoiseSuppressionMode(settings);
+    const ownStream = await this.openMicStream(settings);
+    if (opSeq !== this.micTestOpSeq) {
+      for (const t of ownStream.getTracks()) t.stop();
+      if (!this.rawMicStream) leaveCallAudioSession();
+      return;
+    }
+
+    let testCtx: AudioContext = this.ensureContext();
+    let worklet: AiNoiseWorkletNode | null = null;
+    let usedAiCtx = false;
+
+    if (isAiNoiseSuppressionMode(requestedMode)) {
+      this.emitNoiseStatus({
+        activeMode: this.activeNoiseMode,
+        loading: true,
+        fallbackMessage: null,
+      });
+      try {
+        const aiCtx = this.ensureAiContext(requestedMode);
+        if (aiCtx.state === 'suspended') await aiCtx.resume();
+        const maxChannels = !IS_MOBILE && settings.stereo ? 2 : 1;
+        worklet = await createAiNoiseWorkletNode(aiCtx, requestedMode, maxChannels);
+        if (opSeq !== this.micTestOpSeq) {
+          worklet.destroy();
+          worklet.disconnect();
+          for (const t of ownStream.getTracks()) t.stop();
+          if (!this.rawMicStream) leaveCallAudioSession();
+          return;
+        }
+        testCtx = aiCtx;
+        usedAiCtx = true;
+        this.emitNoiseStatus({
+          activeMode: requestedMode,
+          loading: false,
+          fallbackMessage: null,
+        });
+      } catch (err) {
+        worklet = null;
+        usedAiCtx = false;
+        const rawTrack = ownStream.getAudioTracks()[0];
+        if (rawTrack && typeof rawTrack.applyConstraints === 'function') {
+          await rawTrack
+            .applyConstraints({
+              echoCancellation: settings.echoCancellation,
+              noiseSuppression: true,
+              autoGainControl: settings.autoGainControl,
+            })
+            .catch(() => {});
+        }
+        const reason = err instanceof Error ? err.message : '';
+        const modeLabel = getNoiseSuppressionLabel(requestedMode);
+        this.emitNoiseStatus({
+          activeMode: 'standard',
+          loading: false,
+          fallbackMessage: reason
+            ? `${modeLabel} başlatılamadı (${reason}). Standart moda geçildi.`
+            : `${modeLabel} bu cihazda başlatılamadı. Standart moda geçildi.`,
+        });
+      }
+    } else {
+      this.emitNoiseStatus({
+        activeMode: requestedMode,
+        loading: false,
+        fallbackMessage: null,
+      });
+    }
+
+    if (opSeq !== this.micTestOpSeq) {
+      worklet?.destroy();
+      worklet?.disconnect();
+      for (const t of ownStream.getTracks()) t.stop();
+      if (!this.rawMicStream) leaveCallAudioSession();
+      return;
+    }
+
+    if (testCtx.state === 'suspended') await testCtx.resume().catch(() => {});
+    if (this.outputDeviceId && this.outputDeviceId !== 'default') {
+      const sinkCtx = testCtx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof sinkCtx.setSinkId === 'function') {
+        await sinkCtx.setSinkId(this.outputDeviceId).catch(() => {});
+      }
+    }
+
+    const source = testCtx.createMediaStreamSource(ownStream);
+    const gain = testCtx.createGain();
+    gain.gain.value = 1;
+    const processedOutput: AudioNode = worklet ? source.connect(worklet) : source;
+    processedOutput.connect(gain);
+    gain.connect(testCtx.destination);
+
+    // Outside a call the VAD loop isn't running: meter the processed mic ourselves and apply the
+    // same gate to the playback, so you hear exactly what friends would receive.
+    this.gateMode = effectiveGateMode(settings);
+    this.manualThresholdDb = Math.max(METER_FLOOR_DB, Math.min(0, settings.gateThresholdDb));
+    const analyser = testCtx.createAnalyser();
+    analyser.fftSize = 512;
+    processedOutput.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const tap = analyser;
+    const timer = window.setInterval(() => {
+      tap.getFloatTimeDomainData(buf);
+      const db = levelDb(buf);
+      this.onMicLevel(meterPercent(db));
+      this.processLevel(db, performance.now());
+      const open = this.gateMode === 'off' || this.gateState.open;
+      gain.gain.setTargetAtTime(open ? 1 : 0, testCtx.currentTime, open ? 0.005 : 0.03);
+    }, GATE_TICK_MS);
+
+    this.micTest = { ownStream, source, worklet, gain, analyser, timer, usedAiCtx };
   }
 
   setMicTestStoppedHandler(handler: (() => void) | null) {
@@ -368,32 +764,37 @@ export class AudioEngine {
   }
 
   stopMicTest() {
+    this.micTestOpSeq += 1;
     const test = this.micTest;
     if (!test) return;
     this.micTest = null;
     this.onMicTestStopped?.();
     if (test.timer !== null) window.clearInterval(test.timer);
-    for (const node of [test.source, test.gain, test.analyser]) {
+    for (const node of [test.source, test.worklet, test.gain, test.analyser]) {
       try {
         node?.disconnect();
       } catch {
         // Ignore
       }
     }
+    try {
+      test.worklet?.destroy();
+    } catch {
+      // Ignore
+    }
+    if (test.usedAiCtx && !this.aiWorklet && this.aiCtx && this.aiCtx.state === 'running') {
+      this.aiCtx.suspend().catch(() => {});
+    }
     if (test.ownStream) {
       for (const t of test.ownStream.getTracks()) t.stop();
-      if (!this.micStream) leaveCallAudioSession();
+      if (!this.rawMicStream) leaveCallAudioSession();
       if (!this.vadTimer) this.onMicLevel(0);
     }
   }
 
   /** getUserMedia with graceful fallbacks when the saved device or options are unavailable. */
   private async openMicStream(settings: AudioSettings): Promise<MediaStream> {
-    const baseProcessing: MediaTrackConstraints = {
-      echoCancellation: settings.echoCancellation,
-      noiseSuppression: settings.noiseSuppression,
-      autoGainControl: settings.autoGainControl,
-    };
+    const baseProcessing = buildMicTrackConstraints(settings);
 
     const fullConstraints: MediaTrackConstraints = { ...baseProcessing };
     if (!IS_MOBILE && settings.stereo) {
@@ -433,22 +834,45 @@ export class AudioEngine {
   async applyAudioConstraints(
     settings: AudioSettings,
   ): Promise<{ stream: MediaStream; replaced: boolean }> {
+    const seq = ++this.micOpSeq;
     this.applySensitivity(settings);
-    const track = this.micStream?.getAudioTracks()[0];
+
+    const requestedMode = resolveNoiseSuppressionMode(settings);
+    const rawTrack = this.rawMicStream?.getAudioTracks()[0];
+
     if (
-      this.micStream &&
-      track &&
-      track.readyState === 'live' &&
-      typeof track.applyConstraints === 'function'
+      this.rawMicStream &&
+      rawTrack &&
+      rawTrack.readyState === 'live' &&
+      typeof rawTrack.applyConstraints === 'function'
     ) {
       try {
-        await track.applyConstraints({
-          echoCancellation: settings.echoCancellation,
-          noiseSuppression: settings.noiseSuppression,
-          autoGainControl: settings.autoGainControl,
-        });
-        if (track.readyState === 'live') {
-          return { stream: this.micStream, replaced: false };
+        await rawTrack.applyConstraints(buildMicTrackConstraints(settings));
+        if (seq !== this.micOpSeq) {
+          return { stream: this.micStream ?? this.rawMicStream, replaced: false };
+        }
+
+        if (rawTrack.readyState === 'live') {
+          const wasAi = Boolean(this.aiWorklet);
+          const wantsAi = isAiNoiseSuppressionMode(requestedMode);
+
+          if (!wasAi && !wantsAi) {
+            this.activeNoiseMode = requestedMode;
+            this.emitNoiseStatus({
+              activeMode: requestedMode,
+              loading: false,
+              fallbackMessage: null,
+            });
+            return { stream: this.micStream ?? this.rawMicStream, replaced: false };
+          }
+
+          if (wasAi && wantsAi && requestedMode === this.activeNoiseMode && this.micStream) {
+            return { stream: this.micStream, replaced: false };
+          }
+
+          const prevStream = this.micStream;
+          const nextStream = await this.attachMicMode(this.rawMicStream, settings, seq);
+          return { stream: nextStream, replaced: nextStream !== prevStream };
         }
       } catch {
         // Fall back to clean reacquire below
@@ -459,23 +883,35 @@ export class AudioEngine {
     return { stream, replaced: true };
   }
 
-  private setupVad(stream: MediaStream) {
-    this.vadAvailable = false;
-    this.gateState = { open: false, hangoverUntil: 0 };
-    this.lastGateTickMs = 0;
+  private setupVad(
+    stream: MediaStream,
+    existingTap?: { ctx: AudioContext; sourceNode: AudioNode },
+  ) {
+    this.teardownVad();
     try {
-      const ctx = this.ensureContext();
+      const ctx = existingTap ? existingTap.ctx : this.ensureContext();
       if (ctx.state === 'suspended') {
         ctx.resume().catch(() => {});
       }
-      // Measure a clone: the sent track gets disabled while the gate is closed, and a
-      // disabled track reads as silence, so the gate could never open again.
-      const sent = stream.getAudioTracks()[0];
-      if (!sent) return;
-      const tap = sent.clone();
-      tap.enabled = true;
-      this.vadTapTrack = tap;
-      this.vadSource = ctx.createMediaStreamSource(new MediaStream([tap]));
+
+      if (existingTap) {
+        // In AI mode, tap the worklet output directly (upstream of aiDestination.stream)
+        // so disabling the sent track when the gate closes never silences the meter.
+        this.vadSource = existingTap.sourceNode;
+        this.vadOwnsSource = false;
+      } else {
+        // Measure a clone: the sent track gets disabled while the gate is closed, and a
+        // disabled track reads as silence, so the gate could never open again.
+        const sent = stream.getAudioTracks()[0];
+        if (!sent) return;
+        const tap = sent.clone();
+        tap.enabled = true;
+        this.vadTapTrack = tap;
+        this.vadSource = ctx.createMediaStreamSource(new MediaStream([tap]));
+        this.vadOwnsSource = true;
+      }
+
+      this.vadCtx = ctx;
       this.vadAnalyser = ctx.createAnalyser();
       this.vadAnalyser.fftSize = 512;
       // Passive tap only — never routed to destination or WebRTC transmit
@@ -645,8 +1081,7 @@ export class AudioEngine {
 
       if (peer.gainNode) {
         peer.audioEl.muted = true;
-        // Undo the limiter's built-in makeup gain so 110 % on the slider is 110 %
-        peer.gainNode.gain.value = effective / BOOST_LIMITER_MAKEUP;
+        peer.gainNode.gain.value = effective * BOOST_LIMITER_MAKEUP;
         return;
       }
     }
@@ -785,31 +1220,19 @@ export class AudioEngine {
   }
 
   stopMic() {
+    this.micOpSeq += 1;
     // A test running on the call's mic can't outlive it
     if (this.micTest && !this.micTest.ownStream) this.stopMicTest();
-    if (this.vadTimer !== null) {
-      window.clearInterval(this.vadTimer);
-      this.vadTimer = null;
-    }
-    try {
-      this.vadSource?.disconnect();
-      this.vadAnalyser?.disconnect();
-    } catch {
-      // Ignore
-    }
-    this.vadSource = null;
-    this.vadAnalyser = null;
-    this.vadTapTrack?.stop();
-    this.vadTapTrack = null;
-    this.vadAvailable = false;
-    this.gateState = { open: false, hangoverUntil: 0 };
-    if (this.micStream) {
-      for (const t of this.micStream.getTracks()) {
+    this.teardownVad();
+    this.teardownAiPipeline({ suspendContext: true });
+    if (this.rawMicStream) {
+      for (const t of this.rawMicStream.getTracks()) {
         t.stop();
       }
-      this.micStream = null;
+      this.rawMicStream = null;
       leaveCallAudioSession();
     }
+    this.micStream = null;
     if (this.currentlySpeaking) {
       this.currentlySpeaking = false;
       this.onSpeakingChange(false);
@@ -819,6 +1242,11 @@ export class AudioEngine {
 
   destroyAll() {
     this.stopMic();
+    this.stopMicTest();
+    if (this.aiCtx && this.aiCtx.state !== 'closed') {
+      this.aiCtx.close().catch(() => {});
+    }
+    this.aiCtx = null;
     for (const userId of Array.from(this.remotePeers.keys())) {
       this.removePeer(userId);
     }

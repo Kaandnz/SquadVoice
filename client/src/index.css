@@ -2144,6 +2144,72 @@ button {
   background: rgba(88, 101, 242, 0.16);
 }
 
+.noise-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.noise-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.noise-mode-card {
+  gap: 6px;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.noise-mode-card:hover {
+  border-color: rgba(88, 101, 242, 0.55);
+}
+
+.noise-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.noise-mode-header strong {
+  font-size: 0.86rem;
+}
+
+.noise-mode-badge {
+  font-size: 0.67rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.noise-mode-badge.accent {
+  background: rgba(88, 101, 242, 0.28);
+  color: #c9cdfb;
+}
+
+.noise-mode-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--green);
+}
+
+.noise-mode-status.loading {
+  color: var(--yellow);
+}
+
+.noise-mode-warning {
+  font-size: 0.76rem;
+  color: var(--yellow);
+  background: rgba(240, 178, 50, 0.12);
+  border: 1px solid rgba(240, 178, 50, 0.32);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
 .segmented-row {
   display: flex;
   gap: 6px;
@@ -2452,6 +2518,7 @@ section.voice-stage.collapsed .participant-grid {
   }
 
   .preset-grid,
+  .noise-mode-grid,
   .settings-grid {
     grid-template-columns: 1fr;
   }
