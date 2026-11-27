@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildInviteLink, publicAppOrigin, readInviteCode, stripInviteParam } from './invite';
+import {
+  buildInviteLink,
+  extractInviteCode,
+  generateInviteCode,
+  publicAppOrigin,
+  readInviteCode,
+  stripInviteParam,
+} from './invite';
 
 describe('invite links', () => {
   it('round-trips a code through a link', () => {
@@ -34,5 +41,18 @@ describe('invite links', () => {
       'https://p.firebaseapp.com',
     );
     expect(publicAppOrigin({ protocol: 'tauri:', origin: 'tauri://localhost' }, undefined)).toBeNull();
+  });
+
+  it('extracts invite codes from both full URLs and plain code strings', () => {
+    expect(extractInviteCode('https://squad.web.app/?davet=SQUAD-ABCD1234')).toBe('SQUAD-ABCD1234');
+    expect(extractInviteCode('?davet=SQUAD-9999')).toBe('SQUAD-9999');
+    expect(extractInviteCode('  SQUAD-RAW123  ')).toBe('SQUAD-RAW123');
+    expect(extractInviteCode('bad code with spaces')).toBeNull();
+    expect(extractInviteCode('')).toBeNull();
+  });
+
+  it('generates valid prefixed invite codes', () => {
+    const code = generateInviteCode();
+    expect(code).toMatch(/^SQUAD-[A-Z0-9]{8}$/);
   });
 });

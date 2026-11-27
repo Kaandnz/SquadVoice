@@ -66,23 +66,63 @@ export interface VoiceMemberState {
   speaking: boolean;
 }
 
-export type SoundboardId =
+export type BuiltinSoundboardId =
   | 'airhorn'
+  | 'vineboom'
+  | 'gg'
   | 'drumroll'
   | 'applause'
-  | 'gg'
   | 'fail'
   | 'quack'
+  | 'cricket'
+  | 'dramatic'
+  | 'bonk'
   | 'alarm'
   | 'levelup';
+
+export type SoundboardId = BuiltinSoundboardId | string;
+
+export interface CustomSoundItem {
+  id: string;
+  label: string;
+  emoji: string;
+  audio_url: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+}
 
 export interface SoundboardEvent {
   id: string;
   sound: SoundboardId;
+  label?: string;
+  emoji?: string;
+  audio_url?: string | null;
   user_id: string;
   display_name: string;
   ts: number;
 }
+
+export interface RoomSummary {
+  id: string;
+  name: string;
+  icon_color: string;
+  role: 'admin' | 'member';
+  invite_code?: string;
+  joined_at: string;
+}
+
+export interface ReadReceipt {
+  user_id: string;
+  display_name: string;
+  avatar_color: string;
+  avatar_url?: string | null;
+  last_read_at: string;
+  last_read_msg_id: string;
+  updated_at: number;
+}
+
+export type SettingsTabId = 'audio' | 'notifications' | 'profile' | 'connection' | 'admin';
 
 export interface TurnConfig {
   workerUrl?: string;
@@ -98,7 +138,7 @@ export interface RtcConfigResponse {
 
 export type InputSensitivityMode = 'auto' | 'manual' | 'off';
 
-export type NoiseSuppressionMode = 'off' | 'standard' | 'rnnoise' | 'gtcrn';
+export type NoiseSuppressionMode = 'off' | 'standard' | 'rnnoise' | 'gtcrn' | 'deepfilternet';
 
 export interface NoiseSuppressionStatus {
   activeMode: NoiseSuppressionMode;
@@ -125,6 +165,7 @@ export interface AudioSettings {
   pttEnabled: boolean;
   pttKey: string;
   soundsEnabled: boolean;
+  soundboardVolume: number;
   desktopNotifications: boolean;
 }
 

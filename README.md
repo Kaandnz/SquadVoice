@@ -1,6 +1,6 @@
 # SquadVoice
 
-5 kişiye kadar arkadaş grubunla kullanabileceğin **%100 ücretsiz**, çok düşük gecikmeli, Discord benzeri sesli sohbet, oyun/ekran paylaşımı ve yazılı sohbet uygulaması.
+10 kişiye kadar arkadaş grubunla kullanabileceğin **%100 ücretsiz**, çok düşük gecikmeli, Discord benzeri sesli sohbet, oyun/ekran paylaşımı ve yazılı sohbet uygulaması.
 
 ## Öne Çıkan Özellikler
 - **%100 Ücretsiz 7/24 Firebase Altyapısı (Önerilen):** **Firebase Hosting + Authentication + Realtime Database** (Spark Planı — kredi kartı gerekmez). Ses ve ekran yayını sunucudan geçmeden doğrudan arkadaşlar arasında **P2P WebRTC** ile akar.
@@ -37,7 +37,7 @@ npx -y firebase-tools@latest deploy --only database,hosting
 ```
 Canlı adresin hazır: `https://PROJE_ID.web.app`!
 - İlk kayıt olan kişi otomatik **admin** olur ve girdiği davet kodunu (varsayılan `SQUAD-2026`) ekibin şifresi olarak belirler.
-- Güvenlik kuralları (`database.rules.json`) **en fazla 5 kullanıcı** ve **davet kodu** kontrolünü sunucu tarafında zorunlu kılar.
+- Güvenlik kuralları (`database.rules.json`) **oda başı en fazla 10 kullanıcı** ve **davet kodu/linki** kontrolünü sunucu tarafında zorunlu kılar.
 
 ### Adım 4: Otomatik Yayınlama (GitHub Actions → Firebase CI/CD)
 Projede hazır [`.github/workflows/deploy-firebase.yml`](.github/workflows/deploy-firebase.yml) pipeline'ı bulunur. `main` dalına her push yaptığında testleri çalıştırır, istemciyi derler ve Firebase Hosting + Realtime Database kurallarını otomatik olarak canlıya alır.

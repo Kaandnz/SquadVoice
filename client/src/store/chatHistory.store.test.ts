@@ -15,6 +15,10 @@ vi.mock('../lib/firebaseBackend', () => ({
     },
     subscribeDmMessages: () => () => {},
     subscribeTyping: () => () => {},
+    subscribeChannelReadReceipts: () => () => {},
+    subscribeDmReadReceipts: () => () => {},
+    markChannelRead: vi.fn().mockResolvedValue(undefined),
+    markDmRead: vi.fn().mockResolvedValue(undefined),
     setTyping: vi.fn(),
   },
 }));

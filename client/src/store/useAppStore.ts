@@ -8,7 +8,13 @@ import {
   isFirebaseEnabled,
   resolveIceServers,
 } from '../lib/firebase';
-import { firebaseBackend } from '../lib/firebaseBackend';
+import { DEFAULT_ROOM_ID, firebaseBackend } from '../lib/firebaseBackend';
+import {
+  consumePendingInvite,
+  readInviteCode,
+  savePendingInvite,
+  stripInviteParam,
+} from '../lib/invite';
 import {
   getDefaultServerUrl,
   registerGlobalPttShortcut,
@@ -32,11 +38,14 @@ import { SquadWsClient } from '../lib/ws';
 import type {
   AudioSettings,
   Channel,
+  CustomSoundItem,
   Message,
   MessageReplyRef,
   NoiseSuppressionStatus,
   PeerStats,
   PublicUser,
+  ReadReceipt,
+  RoomSummary,
   ScreenShareOptions,
   SoundboardEvent,
   SoundboardId,
@@ -50,6 +59,7 @@ import { useMicLevelStore } from './useMicLevelStore';
 const TOKEN_KEY = 'squadvoice_token';
 const AUDIO_SETTINGS_KEY = 'squadvoice_audio_settings';
 const PEER_VOLUMES_KEY = 'squadvoice_peer_volumes';
+const ACTIVE_ROOM_KEY = 'squadvoice_active_room';
 
 const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   inputDeviceId: 'default',
@@ -65,6 +75,7 @@ const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   pttEnabled: false,
   pttKey: 'Backquote',
   soundsEnabled: true,
+  soundboardVolume: 0.85,
   desktopNotifications: false,
 };
 
@@ -100,11 +111,14 @@ export interface AppState {
   authLoading: boolean;
   authError: string | null;
 
+  rooms: RoomSummary[];
+  activeRoomId: string | null;
   channels: Channel[];
   activeTextChannelId: string | null;
   activeDmUserId: string | null;
   messagesByChannel: Record<string, Message[]>;
   dmMessagesByPeer: Record<string, Message[]>;
+  readReceiptsByScope: Record<string, ReadReceipt[]>;
   unreadByChannel: Record<string, number>;
   typingUsers: Array<{ user_id: string; display_name: string }>;
 
@@ -135,6 +149,7 @@ export interface AppState {
   localCameraStream: MediaStream | null;
   remoteCameraStreams: Record<string, MediaStream>;
   lastSoundboard: SoundboardEvent | null;
+  customSounds: CustomSoundItem[];
 
   toastError: string | null;
   /** Neutral notice (auto-dismissed), e.g. "Mikrofon değişti". */
@@ -167,9 +182,16 @@ export interface AppState {
   }) => Promise<void>;
   logout: () => void;
 
+  // Rooms / Servers
+  selectRoom: (roomId: string) => Promise<void>;
+  createRoom: (name: string, iconColor?: string) => Promise<RoomSummary>;
+  joinRoomByInvite: (inviteInput: string) => Promise<RoomSummary>;
+  leaveCurrentRoom: () => Promise<void>;
+
   // Channels, DMs, & Messages
   selectTextChannel: (channelId: string) => Promise<void>;
   openDm: (peerUserId: string) => void;
+  markCurrentScopeRead: () => void;
   toggleMemberList: () => void;
   sendMessage: (
     content: string,
@@ -196,7 +218,12 @@ export interface AppState {
   stopCamera: () => void;
   startScreenShare: (opts: ScreenShareOptions) => Promise<void>;
   stopScreenShare: () => void;
-  playRoomSoundboard: (sound: SoundboardId) => Promise<void>;
+  playRoomSoundboard: (
+    sound: SoundboardId,
+    meta?: { label?: string; emoji?: string; audio_url?: string | null },
+  ) => Promise<void>;
+  addCustomSound: (input: { label: string; emoji: string; audio_url: string }) => Promise<void>;
+  deleteCustomSound: (soundId: string) => Promise<void>;
   setFocusedStreamUser: (userId: string | null) => void;
   setScreenAudioConfig: (userId: string | null, volume: number, muted: boolean) => void;
   setPeerVolume: (userId: string, volume: number) => void;
@@ -225,12 +252,15 @@ let audioEngine: AudioEngine | null = null;
 let rtcMesh: WebRtcMeshManager | null = null;
 
 let fbAuthUnsub: (() => void) | null = null;
+let fbUserRoomsUnsub: (() => void) | null = null;
 let fbSessionUnsub: (() => void) | null = null;
 let fbMessagesUnsub: (() => void) | null = null;
 let fbTypingUnsub: (() => void) | null = null;
+let fbReadReceiptsUnsub: (() => void) | null = null;
 let fbSoundboardUnsub: (() => void) | null = null;
 const fbUnreadUnsubs = new Map<string, () => void>();
 const lastSeenMsgIds = new Map<string, string>();
+const lastWrittenReadIds = new Map<string, string>();
 let prevVoicePeerIds = new Set<string>();
 let soundboardClearTimer: number | null = null;
 let lastRegularTextChannelId: string | null = null;
@@ -584,6 +614,22 @@ function markHistory(key: string, received: number, requested: number) {
   }));
 }
 
+function maybeMarkScopeRead(scope: ChatScope, latest: Message | undefined) {
+  if (!latest) return;
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const st = useAppStore.getState();
+  if (!st.firebaseMode || !st.user) return;
+  const key = chatScopeKey(scope);
+  if (lastWrittenReadIds.get(key) === latest.id) return;
+  lastWrittenReadIds.set(key, latest.id);
+  if (scope.kind === 'channel') {
+    firebaseBackend.markChannelRead(scope.id, st.user, latest).catch(() => {});
+  } else {
+    const pairId = dmPairId(st.user.id, scope.peerId);
+    firebaseBackend.markDmRead(pairId, st.user, latest).catch(() => {});
+  }
+}
+
 function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE_SIZE) {
   if (fbMessagesUnsub) {
     fbMessagesUnsub();
@@ -592,6 +638,10 @@ function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE
   if (fbTypingUnsub) {
     fbTypingUnsub();
     fbTypingUnsub = null;
+  }
+  if (fbReadReceiptsUnsub) {
+    fbReadReceiptsUnsub();
+    fbReadReceiptsUnsub = null;
   }
 
   const myUser = useAppStore.getState().user;
@@ -605,6 +655,7 @@ function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE
       const latest = msgs[msgs.length - 1];
       if (latest) {
         lastSeenMsgIds.set(scope.id, latest.id);
+        maybeMarkScopeRead(scope, latest);
       }
       useAppStore.setState((prev) => ({
         messagesByChannel: {
@@ -623,11 +674,22 @@ function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
       });
     });
+    fbReadReceiptsUnsub = firebaseBackend.subscribeChannelReadReceipts(scope.id, (receipts) => {
+      useAppStore.setState((prev) => ({
+        readReceiptsByScope: {
+          ...prev.readReceiptsByScope,
+          [historyKey]: receipts,
+        },
+      }));
+    });
   } else {
     const pairId = dmPairId(myUser.id, scope.peerId);
     fbMessagesUnsub = firebaseBackend.subscribeDmMessages(pairId, (msgs) => {
       const prevMsgs = useAppStore.getState().dmMessagesByPeer[scope.peerId] || [];
       const latest = msgs[msgs.length - 1];
+      if (latest) {
+        maybeMarkScopeRead(scope, latest);
+      }
       if (latest && latest.user_id !== myUser.id && !prevMsgs.some((m) => m.id === latest.id)) {
         maybePlayUi('message');
         maybeNotifyDesktop(`${latest.display_name} (Özel Mesaj)`, latest.content || 'Görsel gönderdi');
@@ -645,6 +707,14 @@ function subscribeFirebaseChatScope(scope: ChatScope, windowSize = FIREBASE_PAGE
         typingUsers: users.filter((u) => u.user_id !== myUser.id),
       });
     });
+    fbReadReceiptsUnsub = firebaseBackend.subscribeDmReadReceipts(pairId, (receipts) => {
+      useAppStore.setState((prev) => ({
+        readReceiptsByScope: {
+          ...prev.readReceiptsByScope,
+          [historyKey]: receipts,
+        },
+      }));
+    });
   }
 }
 
@@ -658,7 +728,12 @@ function subscribeFirebaseSoundboard(channelId: string | null) {
     const state = useAppStore.getState();
     if (state.lastSoundboard?.id === ev.id) return;
     if (!state.deafened && state.audioSettings.soundsEnabled && state.user?.status !== 'dnd') {
-      playSoundboard(ev.sound);
+      const customClip =
+        ev.audio_url || state.customSounds.find((s) => s.id === ev.sound)?.audio_url || null;
+      playSoundboard(ev.sound, {
+        volume: state.audioSettings.soundboardVolume ?? 0.85,
+        customAudioUrl: customClip,
+      });
     }
     useAppStore.setState({ lastSoundboard: ev });
     if (soundboardClearTimer !== null) {
@@ -714,7 +789,7 @@ function syncUnreadWatchers(channels: Channel[]) {
   }
 }
 
-function stopFirebaseListeners() {
+function stopFirebaseRoomListeners() {
   if (fbMessagesUnsub) {
     fbMessagesUnsub();
     fbMessagesUnsub = null;
@@ -722,6 +797,10 @@ function stopFirebaseListeners() {
   if (fbTypingUnsub) {
     fbTypingUnsub();
     fbTypingUnsub = null;
+  }
+  if (fbReadReceiptsUnsub) {
+    fbReadReceiptsUnsub();
+    fbReadReceiptsUnsub = null;
   }
   if (fbSoundboardUnsub) {
     fbSoundboardUnsub();
@@ -736,11 +815,269 @@ function stopFirebaseListeners() {
   }
   fbUnreadUnsubs.clear();
   lastSeenMsgIds.clear();
+  lastWrittenReadIds.clear();
   prevVoicePeerIds.clear();
   lastRegularTextChannelId = null;
   selfLeavingVoice = false;
   currentChatScope = null;
   currentChatWindow = FIREBASE_PAGE_SIZE;
+}
+
+function stopFirebaseListeners() {
+  stopFirebaseRoomListeners();
+  if (fbUserRoomsUnsub) {
+    fbUserRoomsUnsub();
+    fbUserRoomsUnsub = null;
+  }
+}
+
+async function startFirebaseRoomSession(user: PublicUser, roomId: string) {
+  stopFirebaseRoomListeners();
+  firebaseBackend.setActiveRoom(roomId);
+  try {
+    localStorage.setItem(ACTIVE_ROOM_KEY, roomId);
+  } catch {
+    // Ignore storage error
+  }
+
+  const roomMeta = useAppStore.getState().rooms.find((r) => r.id === roomId);
+  const initialRole = roomMeta?.role ?? user.role;
+  const scopedUser: PublicUser = { ...user, role: initialRole };
+
+  const adminInviteCode =
+    initialRole === 'admin' ? await firebaseBackend.getAdminInviteCode(roomId) : null;
+
+  useAppStore.setState({
+    user: scopedUser,
+    activeRoomId: roomId,
+    serverName: roomMeta?.name || 'SquadVoice',
+    adminInviteCode,
+    channels: [],
+    activeTextChannelId: null,
+    activeDmUserId: null,
+    messagesByChannel: {},
+    readReceiptsByScope: {},
+    unreadByChannel: {},
+    chatHistoryMore: {},
+    typingUsers: [],
+    allUsers: [],
+    onlineUsers: [],
+    voiceMembers: [],
+    customSounds: [],
+    lastSoundboard: null,
+  });
+
+  fbSessionUnsub = firebaseBackend.startRealtimeSession(
+    scopedUser,
+    {
+      onUsers: (allUsers) => {
+        const updatedSelf = allUsers.find((u) => u.id === user.id);
+        if (updatedSelf) {
+          const prevSelf = useAppStore.getState().user;
+          const roleChanged = !prevSelf || updatedSelf.role !== prevSelf.role;
+          useAppStore.setState({ user: { ...(prevSelf ?? user), ...updatedSelf } });
+          if (roleChanged) {
+            if (updatedSelf.role === 'admin') {
+              firebaseBackend.getAdminInviteCode(roomId).then((code) => {
+                if (useAppStore.getState().activeRoomId === roomId) {
+                  useAppStore.setState({ adminInviteCode: code });
+                }
+              });
+            } else {
+              useAppStore.setState({ adminInviteCode: null });
+            }
+          }
+        }
+        useAppStore.setState({ allUsers });
+      },
+      onOnlineUsers: (onlineUsers) => useAppStore.setState({ onlineUsers }),
+      onServerName: (serverName) => useAppStore.setState({ serverName }),
+      onCustomSounds: (customSounds) => useAppStore.setState({ customSounds }),
+      onTurnConfig: (turnConfig) => {
+        useAppStore.setState({ turnConfig });
+        resolveIceServers(turnConfig, () => firebaseBackend.getIdToken())
+          .then((built) => {
+            useAppStore.setState({
+              iceServers: built.iceServers,
+              turnEnabled: built.turnEnabled,
+            });
+            rtcMesh?.updateIceServers(built.iceServers);
+          })
+          .catch(() => {});
+      },
+      onKicked: () => {
+        const st = useAppStore.getState();
+        if (st.activeRoomId !== roomId) return;
+        const remaining = st.rooms.filter((r) => r.id !== roomId);
+        rtcMesh?.closeAll();
+        audioEngine?.destroyAll();
+        stopFirebaseRoomListeners();
+        useAppStore.setState({
+          rooms: remaining,
+          activeRoomId: null,
+          activeVoiceChannelId: null,
+          channels: [],
+          allUsers: [],
+          onlineUsers: [],
+          voiceMembers: [],
+          toastError: 'Bu odadan çıkarıldın. Tekrar katılmak için davet linki gerekir.',
+        });
+        if (remaining.length > 0 && st.user) {
+          void startFirebaseRoomSession(st.user, remaining[0].id);
+        }
+      },
+      onChannels: (channels) => {
+        const prevState = useAppStore.getState();
+        const textExists = Boolean(
+          prevState.activeTextChannelId &&
+            channels.some((c) => c.id === prevState.activeTextChannelId),
+        );
+
+        const leftVoice =
+          prevState.activeVoiceChannelId &&
+          !channels.some((c) => c.id === prevState.activeVoiceChannelId);
+
+        if (leftVoice) {
+          rtcMesh?.closeAll();
+          audioEngine?.destroyAll();
+          subscribeFirebaseSoundboard(null);
+        }
+
+        let nextTextId = textExists
+          ? prevState.activeTextChannelId
+          : resolveFallbackTextChannelId(channels);
+        if (leftVoice && prevState.activeTextChannelId === prevState.activeVoiceChannelId) {
+          nextTextId = resolveFallbackTextChannelId(channels);
+        }
+        const nextTextChannel = channels.find((c) => c.id === nextTextId);
+        if (nextTextChannel?.kind === 'text') {
+          lastRegularTextChannelId = nextTextChannel.id;
+        }
+
+        useAppStore.setState({
+          channels,
+          activeTextChannelId: nextTextId,
+          activeVoiceChannelId: leftVoice ? null : prevState.activeVoiceChannelId,
+          localScreenStream: leftVoice ? null : prevState.localScreenStream,
+          localCameraStream: leftVoice ? null : prevState.localCameraStream,
+        });
+
+        syncUnreadWatchers(channels);
+
+        if (!prevState.activeDmUserId && nextTextId && nextTextId !== prevState.activeTextChannelId) {
+          subscribeFirebaseChatScope({ kind: 'channel', id: nextTextId });
+        }
+      },
+      onVoiceMembers: (rawVoiceMembers) => {
+        const activeMembers = rawVoiceMembers.filter((m) => !m.kicked_by_admin);
+        useAppStore.setState({ voiceMembers: activeMembers });
+        for (const m of activeMembers) {
+          rtcMesh?.setPeerScreenStreamId(m.user_id, m.screen_stream_id);
+          rtcMesh?.setPeerCameraStreamId(m.user_id, m.camera_stream_id ?? null);
+        }
+
+        const st = useAppStore.getState();
+        if (st.activeVoiceChannelId && st.user) {
+          const userId = st.user.id;
+          const myEntry = rawVoiceMembers.find((m) => m.user_id === userId);
+          const status = classifyOwnVoiceEntry({
+            myEntry,
+            mySessionId: firebaseBackend.sessionId(),
+            restorePending: firebaseBackend.isVoiceRestorePending(userId),
+          });
+
+          if (status === 'restoring') {
+            return;
+          }
+          if (status === 'kicked') {
+            leaveVoiceLocally('Yönetici tarafından ses odasından çıkarıldın.');
+            firebaseBackend.leaveVoice(userId).catch(() => {});
+            return;
+          }
+          if (status === 'taken-over') {
+            firebaseBackend.releaseVoiceOwnership(userId);
+            leaveVoiceLocally(null);
+            showInfo('Görüşme başka bir cihazına aktarıldı.');
+            return;
+          }
+          if (status === 'gone' || !myEntry) {
+            firebaseBackend.releaseVoiceOwnership(userId);
+            leaveVoiceLocally(selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.');
+            return;
+          }
+
+          const nextForceMuted = Boolean(myEntry.force_muted);
+          if (nextForceMuted !== st.forceMuted || (nextForceMuted && !st.muted)) {
+            useAppStore.setState({
+              forceMuted: nextForceMuted,
+              muted: nextForceMuted ? true : st.muted,
+              speaking: nextForceMuted ? false : st.speaking,
+            });
+            syncMicTransmission();
+          }
+
+          const effectiveChannelId = myEntry.channel_id;
+          if (effectiveChannelId !== st.activeVoiceChannelId) {
+            const wasViewingOldVoiceChat =
+              !st.activeDmUserId && st.activeTextChannelId === st.activeVoiceChannelId;
+            useAppStore.setState({ activeVoiceChannelId: effectiveChannelId });
+            subscribeFirebaseSoundboard(effectiveChannelId);
+            if (wasViewingOldVoiceChat) {
+              useAppStore.getState().selectTextChannel(effectiveChannelId);
+            }
+          }
+
+          const peersInChannel = activeMembers
+            .filter((m) => m.channel_id === effectiveChannelId)
+            .map((m) => m.user_id);
+
+          const nextPeerSet = new Set(peersInChannel.filter((id) => id !== st.user!.id));
+          if (prevVoicePeerIds.size > 0 || nextPeerSet.size > 0) {
+            const joined = Array.from(nextPeerSet).some((id) => !prevVoicePeerIds.has(id));
+            const left = Array.from(prevVoicePeerIds).some((id) => !nextPeerSet.has(id));
+            if (joined) maybePlayUi('peer_join');
+            else if (left) maybePlayUi('peer_leave');
+          }
+          prevVoicePeerIds = nextPeerSet;
+
+          pruneStoppedRemoteMedia(activeMembers, effectiveChannelId);
+          rtcMesh?.syncPeers(peersInChannel);
+        }
+      },
+      onRtcSignal: (signal) => {
+        const sender = useAppStore
+          .getState()
+          .voiceMembers.find((m) => m.user_id === signal.from_user_id);
+        if (!isSignalFromVoiceSession(sender, signal.session_id)) {
+          return;
+        }
+        if (signal.kind === 'offer') {
+          rtcMesh
+            ?.handleOffer(
+              signal.from_user_id,
+              signal.sdp,
+              signal.screen_stream_id,
+              signal.camera_stream_id,
+            )
+            .catch(() => {});
+        } else if (signal.kind === 'answer') {
+          rtcMesh?.handleAnswer(signal.from_user_id, signal.sdp).catch(() => {});
+        } else if (signal.kind === 'ice') {
+          rtcMesh?.handleIceCandidate(signal.from_user_id, signal.candidate).catch(() => {});
+        }
+      },
+      onConnectionStatus: (wsStatus) => useAppStore.setState({ wsStatus }),
+      onVoiceRestoreFailed: (reason) => {
+        if (!useAppStore.getState().activeVoiceChannelId) return;
+        leaveVoiceLocally(
+          reason === 'kicked'
+            ? 'Yönetici tarafından ses odasından çıkarıldın.'
+            : 'Bağlantı geri geldi ama ses odasına yeniden katılınamadı.',
+        );
+      },
+    },
+    roomId,
+  );
 }
 
 async function initializeFirebaseSession(user: PublicUser) {
@@ -751,212 +1088,61 @@ async function initializeFirebaseSession(user: PublicUser) {
   const audioSettings = useAppStore.getState().audioSettings;
   rtcMesh?.configure(user.id, iceServers, audioSettings);
 
-  const adminInviteCode =
-    user.role === 'admin' ? await firebaseBackend.getAdminInviteCode() : null;
+  let rooms = await firebaseBackend.ensureUserRooms(user).catch(() => [] as RoomSummary[]);
+  let targetRoomId: string | null = null;
+
+  // If user arrived via an invite link (?davet=CODE), auto-join that room immediately
+  const pendingInvite = consumePendingInvite();
+  if (pendingInvite) {
+    try {
+      const joined = await firebaseBackend.joinRoomByInvite(user, pendingInvite);
+      if (!rooms.some((r) => r.id === joined.id)) {
+        rooms = [...rooms, joined];
+      }
+      targetRoomId = joined.id;
+      showInfo(`"${joined.name}" odasına katıldın!`);
+    } catch (err) {
+      useAppStore.setState({
+        toastError:
+          err instanceof Error ? err.message : 'Davet linkiyle odaya katılınamadı.',
+      });
+    }
+  }
+
+  let savedRoomId: string | null = null;
+  try {
+    savedRoomId = localStorage.getItem(ACTIVE_ROOM_KEY);
+  } catch {
+    savedRoomId = null;
+  }
+
+  if (!targetRoomId) {
+    if (savedRoomId && rooms.some((r) => r.id === savedRoomId)) {
+      targetRoomId = savedRoomId;
+    } else if (rooms.length > 0) {
+      targetRoomId = rooms[0].id;
+    }
+  }
 
   useAppStore.setState({
     user,
     token: 'firebase-session',
-    adminInviteCode,
+    rooms,
+    activeRoomId: targetRoomId,
     iceServers,
     turnEnabled,
     authError: null,
     authLoading: false,
+    wsStatus: targetRoomId ? 'connecting' : 'connected',
   });
 
-  fbSessionUnsub = firebaseBackend.startRealtimeSession(user, {
-    onUsers: (allUsers) => {
-      const updatedSelf = allUsers.find((u) => u.id === user.id);
-      if (updatedSelf) {
-        const prevSelf = useAppStore.getState().user;
-        const roleChanged = prevSelf && updatedSelf.role !== prevSelf.role;
-        useAppStore.setState({ user: updatedSelf });
-        if (roleChanged) {
-          if (updatedSelf.role === 'admin') {
-            firebaseBackend.getAdminInviteCode().then((code) => {
-              useAppStore.setState({ adminInviteCode: code });
-            });
-          } else {
-            useAppStore.setState({ adminInviteCode: null });
-          }
-        }
-      }
-      useAppStore.setState({ allUsers });
-    },
-    onOnlineUsers: (onlineUsers) => useAppStore.setState({ onlineUsers }),
-    onServerName: (serverName) => useAppStore.setState({ serverName }),
-    onTurnConfig: (turnConfig) => {
-      useAppStore.setState({ turnConfig });
-      resolveIceServers(turnConfig, () => firebaseBackend.getIdToken())
-        .then((built) => {
-          useAppStore.setState({
-            iceServers: built.iceServers,
-            turnEnabled: built.turnEnabled,
-          });
-          rtcMesh?.updateIceServers(built.iceServers);
-        })
-        .catch(() => {});
-    },
-    onKicked: () => {
-      useAppStore.getState().logout();
-      useAppStore.setState({
-        authError: 'Sunucudan çıkarıldın. Tekrar katılmak için davet kodu gerekir.',
-      });
-    },
-    onChannels: (channels) => {
-      const prevState = useAppStore.getState();
-      const textExists = Boolean(
-        prevState.activeTextChannelId &&
-          channels.some((c) => c.id === prevState.activeTextChannelId),
-      );
-
-      const leftVoice =
-        prevState.activeVoiceChannelId &&
-        !channels.some((c) => c.id === prevState.activeVoiceChannelId);
-
-      if (leftVoice) {
-        rtcMesh?.closeAll();
-        audioEngine?.destroyAll();
-        subscribeFirebaseSoundboard(null);
-      }
-
-      let nextTextId = textExists
-        ? prevState.activeTextChannelId
-        : resolveFallbackTextChannelId(channels);
-      if (leftVoice && prevState.activeTextChannelId === prevState.activeVoiceChannelId) {
-        nextTextId = resolveFallbackTextChannelId(channels);
-      }
-      const nextTextChannel = channels.find((c) => c.id === nextTextId);
-      if (nextTextChannel?.kind === 'text') {
-        lastRegularTextChannelId = nextTextChannel.id;
-      }
-
-      useAppStore.setState({
-        channels,
-        activeTextChannelId: nextTextId,
-        activeVoiceChannelId: leftVoice ? null : prevState.activeVoiceChannelId,
-        localScreenStream: leftVoice ? null : prevState.localScreenStream,
-        localCameraStream: leftVoice ? null : prevState.localCameraStream,
-      });
-
-      syncUnreadWatchers(channels);
-
-      if (!prevState.activeDmUserId && nextTextId && nextTextId !== prevState.activeTextChannelId) {
-        subscribeFirebaseChatScope({ kind: 'channel', id: nextTextId });
-      }
-    },
-    onVoiceMembers: (rawVoiceMembers) => {
-      const activeMembers = rawVoiceMembers.filter((m) => !m.kicked_by_admin);
-      useAppStore.setState({ voiceMembers: activeMembers });
-      for (const m of activeMembers) {
-        rtcMesh?.setPeerScreenStreamId(m.user_id, m.screen_stream_id);
-        rtcMesh?.setPeerCameraStreamId(m.user_id, m.camera_stream_id ?? null);
-      }
-
-      const st = useAppStore.getState();
-      if (st.activeVoiceChannelId && st.user) {
-        const userId = st.user.id;
-        const myEntry = rawVoiceMembers.find((m) => m.user_id === userId);
-        const status = classifyOwnVoiceEntry({
-          myEntry,
-          mySessionId: firebaseBackend.sessionId(),
-          restorePending: firebaseBackend.isVoiceRestorePending(userId),
-        });
-
-        if (status === 'restoring') {
-          // Our socket dropped and the server cleaned up the entry; firebaseBackend
-          // re-creates it as soon as we're back online, so stay in the room meanwhile.
-          return;
-        }
-        if (status === 'kicked') {
-          leaveVoiceLocally('Yönetici tarafından ses odasından çıkarıldın.');
-          firebaseBackend.leaveVoice(userId).catch(() => {});
-          return;
-        }
-        if (status === 'taken-over') {
-          // Another device of this account joined: hand the entry over untouched
-          firebaseBackend.releaseVoiceOwnership(userId);
-          leaveVoiceLocally(null);
-          showInfo('Görüşme başka bir cihazına aktarıldı.');
-          return;
-        }
-        if (status === 'gone' || !myEntry) {
-          firebaseBackend.releaseVoiceOwnership(userId);
-          leaveVoiceLocally(selfLeavingVoice ? null : 'Ses odası bağlantısı kesildi.');
-          return;
-        }
-
-        const nextForceMuted = Boolean(myEntry.force_muted);
-        if (nextForceMuted !== st.forceMuted || (nextForceMuted && !st.muted)) {
-          useAppStore.setState({
-            forceMuted: nextForceMuted,
-            muted: nextForceMuted ? true : st.muted,
-            speaking: nextForceMuted ? false : st.speaking,
-          });
-          syncMicTransmission();
-        }
-
-        const effectiveChannelId = myEntry.channel_id;
-        if (effectiveChannelId !== st.activeVoiceChannelId) {
-          const wasViewingOldVoiceChat =
-            !st.activeDmUserId && st.activeTextChannelId === st.activeVoiceChannelId;
-          useAppStore.setState({ activeVoiceChannelId: effectiveChannelId });
-          subscribeFirebaseSoundboard(effectiveChannelId);
-          if (wasViewingOldVoiceChat) {
-            useAppStore.getState().selectTextChannel(effectiveChannelId);
-          }
-        }
-
-        const peersInChannel = activeMembers
-          .filter((m) => m.channel_id === effectiveChannelId)
-          .map((m) => m.user_id);
-
-        const nextPeerSet = new Set(peersInChannel.filter((id) => id !== st.user!.id));
-        if (prevVoicePeerIds.size > 0 || nextPeerSet.size > 0) {
-          const joined = Array.from(nextPeerSet).some((id) => !prevVoicePeerIds.has(id));
-          const left = Array.from(prevVoicePeerIds).some((id) => !nextPeerSet.has(id));
-          if (joined) maybePlayUi('peer_join');
-          else if (left) maybePlayUi('peer_leave');
-        }
-        prevVoicePeerIds = nextPeerSet;
-
-        pruneStoppedRemoteMedia(activeMembers, effectiveChannelId);
-        rtcMesh?.syncPeers(peersInChannel);
-      }
-    },
-    onRtcSignal: (signal) => {
-      const sender = useAppStore
-        .getState()
-        .voiceMembers.find((m) => m.user_id === signal.from_user_id);
-      if (!isSignalFromVoiceSession(sender, signal.session_id)) {
-        // Another tab/device of that person (not the one in voice) is answering too
-        return;
-      }
-      if (signal.kind === 'offer') {
-        rtcMesh
-          ?.handleOffer(
-            signal.from_user_id,
-            signal.sdp,
-            signal.screen_stream_id,
-            signal.camera_stream_id,
-          )
-          .catch(() => {});
-      } else if (signal.kind === 'answer') {
-        rtcMesh?.handleAnswer(signal.from_user_id, signal.sdp).catch(() => {});
-      } else if (signal.kind === 'ice') {
-        rtcMesh?.handleIceCandidate(signal.from_user_id, signal.candidate).catch(() => {});
-      }
-    },
-    onConnectionStatus: (wsStatus) => useAppStore.setState({ wsStatus }),
-    onVoiceRestoreFailed: (reason) => {
-      if (!useAppStore.getState().activeVoiceChannelId) return;
-      leaveVoiceLocally(
-        reason === 'kicked'
-          ? 'Yönetici tarafından ses odasından çıkarıldın.'
-          : 'Bağlantı geri geldi ama ses odasına yeniden katılınamadı.',
-      );
-    },
+  fbUserRoomsUnsub = firebaseBackend.subscribeUserRooms(user.id, (nextRooms) => {
+    useAppStore.setState({ rooms: nextRooms });
   });
+
+  if (targetRoomId) {
+    await startFirebaseRoomSession(user, targetRoomId);
+  }
 
   setupPttBinding(audioSettings);
 }
@@ -1135,11 +1321,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   authLoading: FIREBASE_ACTIVE ? true : Boolean(localStorage.getItem(TOKEN_KEY)),
   authError: null,
 
+  rooms: [],
+  activeRoomId: null,
   channels: [],
   activeTextChannelId: null,
   activeDmUserId: null,
   messagesByChannel: {},
   dmMessagesByPeer: {},
+  readReceiptsByScope: {},
   unreadByChannel: {},
   typingUsers: [],
 
@@ -1174,6 +1363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   localCameraStream: null,
   remoteCameraStreams: {},
   lastSoundboard: null,
+  customSounds: [],
 
   toastError: null,
   toastInfo: null,
@@ -1187,6 +1377,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   bootstrap: async () => {
+    if (typeof window !== 'undefined') {
+      const urlCode = readInviteCode(window.location.search);
+      if (urlCode) {
+        savePendingInvite(urlCode);
+        window.history.replaceState(
+          window.history.state,
+          '',
+          stripInviteParam(window.location.href),
+        );
+      }
+    }
+
     if (get().firebaseMode) {
       if (fbAuthUnsub) return;
       fbAuthUnsub = firebaseBackend.observeAuth((fbUser) => {
@@ -1196,6 +1398,12 @@ export const useAppStore = create<AppState>((set, get) => ({
               set({ authLoading: false });
             });
           } else {
+            const pending = consumePendingInvite();
+            if (pending) {
+              get()
+                .joinRoomByInvite(pending)
+                .catch(() => {});
+            }
             set({ authLoading: false });
           }
         } else {
@@ -1204,10 +1412,14 @@ export const useAppStore = create<AppState>((set, get) => ({
             user: null,
             token: null,
             authLoading: false,
+            rooms: [],
+            activeRoomId: null,
             channels: [],
             onlineUsers: [],
             voiceMembers: [],
             activeVoiceChannelId: null,
+            readReceiptsByScope: {},
+            customSounds: [],
           });
         }
       });
@@ -1263,6 +1475,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().firebaseMode) {
       set({ authLoading: true, authError: null });
       try {
+        if (inviteCode.trim()) {
+          savePendingInvite(inviteCode.trim());
+        }
         const user = await firebaseBackend.register(
           username,
           displayName,
@@ -1349,12 +1564,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       token: null,
       user: null,
       adminInviteCode: null,
+      rooms: [],
+      activeRoomId: null,
       channels: [],
       onlineUsers: [],
       voiceMembers: [],
       activeVoiceChannelId: null,
       activeDmUserId: null,
       typingUsers: [],
+      readReceiptsByScope: {},
+      customSounds: [],
       forceMuted: false,
       localScreenStream: null,
       remoteScreenStreams: {},
@@ -1368,6 +1587,82 @@ export const useAppStore = create<AppState>((set, get) => ({
         fallbackMessage: null,
       },
     });
+  },
+
+  selectRoom: async (roomId) => {
+    const s = get();
+    if (!s.firebaseMode || !s.user || s.activeRoomId === roomId) return;
+    if (s.activeVoiceChannelId) {
+      s.leaveVoice();
+    }
+    await startFirebaseRoomSession(s.user, roomId);
+  },
+
+  createRoom: async (name, iconColor) => {
+    const s = get();
+    if (!s.firebaseMode || !s.user) {
+      throw new Error('Çoklu oda yalnızca Firebase modunda desteklenir.');
+    }
+    if (s.activeVoiceChannelId) {
+      s.leaveVoice();
+    }
+    const created = await firebaseBackend.createRoom(s.user, name, iconColor);
+    set((prev) => ({
+      rooms: prev.rooms.some((r) => r.id === created.id)
+        ? prev.rooms
+        : [...prev.rooms, created],
+    }));
+    await startFirebaseRoomSession(s.user, created.id);
+    showInfo(`"${created.name}" oluşturuldu! Davet linkini arkadaşlarınla paylaşabilirsin.`);
+    return created;
+  },
+
+  joinRoomByInvite: async (inviteInput) => {
+    const s = get();
+    if (!s.firebaseMode || !s.user) {
+      throw new Error('Davet linkiyle katılmak için önce giriş yapmalısın.');
+    }
+    const joined = await firebaseBackend.joinRoomByInvite(s.user, inviteInput);
+    if (s.activeVoiceChannelId && s.activeRoomId !== joined.id) {
+      s.leaveVoice();
+    }
+    set((prev) => ({
+      rooms: prev.rooms.some((r) => r.id === joined.id)
+        ? prev.rooms
+        : [...prev.rooms, joined],
+    }));
+    await startFirebaseRoomSession(s.user, joined.id);
+    showInfo(`"${joined.name}" odasına katıldın!`);
+    return joined;
+  },
+
+  leaveCurrentRoom: async () => {
+    const s = get();
+    if (!s.firebaseMode || !s.user || !s.activeRoomId) return;
+    const leavingId = s.activeRoomId;
+    if (s.activeVoiceChannelId) {
+      s.leaveVoice();
+    }
+    stopFirebaseRoomListeners();
+    await firebaseBackend.leaveRoom(s.user, leavingId);
+    const remaining = s.rooms.filter((r) => r.id !== leavingId);
+    set({
+      rooms: remaining,
+      activeRoomId: null,
+      channels: [],
+      allUsers: [],
+      onlineUsers: [],
+      voiceMembers: [],
+      customSounds: [],
+      readReceiptsByScope: {},
+      adminInviteCode: null,
+    });
+    if (remaining.length > 0) {
+      await startFirebaseRoomSession(s.user, remaining[0].id);
+    } else {
+      firebaseBackend.setActiveRoom(DEFAULT_ROOM_ID);
+    }
+    showInfo('Odadan ayrıldın.');
   },
 
   selectTextChannel: async (channelId) => {
@@ -1406,6 +1701,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ activeDmUserId: peerUserId, typingUsers: [] });
     if (get().firebaseMode) {
       subscribeFirebaseChatScope({ kind: 'dm', peerId: peerUserId });
+    }
+  },
+
+  markCurrentScopeRead: () => {
+    if (!currentChatScope) return;
+    const s = get();
+    if (!s.firebaseMode || !s.user) return;
+    const msgs =
+      currentChatScope.kind === 'channel'
+        ? s.messagesByChannel[currentChatScope.id] || []
+        : s.dmMessagesByPeer[currentChatScope.peerId] || [];
+    const latest = msgs[msgs.length - 1];
+    if (latest) {
+      maybeMarkScopeRead(currentChatScope, latest);
     }
   },
 
@@ -1855,10 +2164,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  playRoomSoundboard: async (sound) => {
+  playRoomSoundboard: async (sound, meta) => {
     const s = get();
     if (!s.firebaseMode || !s.activeVoiceChannelId || !s.user) return;
-    await firebaseBackend.triggerSoundboard(s.activeVoiceChannelId, s.user, sound);
+    await firebaseBackend.triggerSoundboard(s.activeVoiceChannelId, s.user, sound, meta);
+  },
+
+  addCustomSound: async (input) => {
+    const s = get();
+    if (!s.firebaseMode || !s.user) return;
+    await firebaseBackend.addCustomSound(s.user, input);
+    showInfo(`"${input.label}" ses tahtasına eklendi!`);
+  },
+
+  deleteCustomSound: async (soundId) => {
+    if (!get().firebaseMode) return;
+    await firebaseBackend.deleteCustomSound(soundId);
   },
 
   setFocusedStreamUser: (userId) => set({ focusedStreamUserId: userId }),
@@ -1955,12 +2276,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateInviteCode: async (code) => {
-    await firebaseBackend.setInviteCode(code);
+    const s = get();
+    await firebaseBackend.setInviteCode(code, s.user?.id);
     set({ adminInviteCode: code.trim() });
   },
 
   updateServerName: async (name) => {
-    await firebaseBackend.setServerName(name);
+    const s = get();
+    await firebaseBackend.setServerName(name, s.user?.id);
   },
 
   updateTurnConfig: async (turn) => {

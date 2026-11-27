@@ -23,6 +23,7 @@ const BASE_SETTINGS: AudioSettings = {
   pttEnabled: false,
   pttKey: 'Backquote',
   soundsEnabled: true,
+  soundboardVolume: 0.85,
   desktopNotifications: false,
 };
 
@@ -95,6 +96,19 @@ describe('noiseSuppression helpers', () => {
 
     expect(
       buildMicTrackConstraints({
+        echoCancellation: true,
+        noiseSuppression: true,
+        noiseSuppressionMode: 'deepfilternet',
+        autoGainControl: true,
+      }),
+    ).toEqual({
+      echoCancellation: true,
+      noiseSuppression: false,
+      autoGainControl: true,
+    });
+
+    expect(
+      buildMicTrackConstraints({
         echoCancellation: false,
         noiseSuppression: false,
         noiseSuppressionMode: 'off',
@@ -112,6 +126,7 @@ describe('noiseSuppression helpers', () => {
     expect(isAiNoiseSuppressionMode('standard')).toBe(false);
     expect(isAiNoiseSuppressionMode('rnnoise')).toBe(true);
     expect(isAiNoiseSuppressionMode('gtcrn')).toBe(true);
+    expect(isAiNoiseSuppressionMode('deepfilternet')).toBe(true);
 
     expect(isSampleRateCompatible('rnnoise', 48000)).toBe(true);
     expect(isSampleRateCompatible('rnnoise', 44100)).toBe(false);
@@ -121,11 +136,16 @@ describe('noiseSuppression helpers', () => {
     expect(isSampleRateCompatible('gtcrn', 16000)).toBe(true);
     expect(isSampleRateCompatible('gtcrn', 44100)).toBe(false);
 
+    expect(isSampleRateCompatible('deepfilternet', 48000)).toBe(true);
+    expect(isSampleRateCompatible('deepfilternet', 44100)).toBe(false);
+    expect(isSampleRateCompatible('deepfilternet', 16000)).toBe(false);
+
     expect(NOISE_SUPPRESSION_OPTIONS.map((o) => o.id)).toEqual([
       'off',
       'standard',
       'rnnoise',
       'gtcrn',
+      'deepfilternet',
     ]);
   });
 });
