@@ -96,7 +96,7 @@ jobs:
         if: secrets.FIREBASE_SERVICE_ACCOUNT != ''
         env:
           FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID || vars.FIREBASE_ANDROID_APP_ID || '1:1068358115704:android:c8a4fb6728fd21f075288d' }}
-          FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS || '' }}
+          FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS || 'ekip' }}
           SHA: ${{ github.sha }}
         run: |
           SHORT_SHA="${SHA:0:7}"
