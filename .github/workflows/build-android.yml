@@ -63,9 +63,14 @@ jobs:
 
       - name: Build Android APK
         working-directory: client/android
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug -PandroidVersionCode="$((RUN_NUMBER + 10))"
 
       - name: Prepare release APK
         run: |
@@ -85,15 +90,21 @@ jobs:
             gh release create latest release-assets/SquadVoice-Android.apk --repo "$REPO" --target "$SHA" --latest --title "SquadVoice (En Güncel)" --notes "Windows, macOS ve Android kurulum dosyaları."
           fi
 
+      - name: Check Firebase Service Account
+        id: check_firebase
+        env:
+          HAS_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        run: echo "has_sa=$HAS_SA" >> "$GITHUB_OUTPUT"
+
       - name: Authenticate with Google Cloud for Firebase App Distribution
-        if: secrets.FIREBASE_SERVICE_ACCOUNT != ''
+        if: steps.check_firebase.outputs.has_sa == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           create_credentials_file: true
 
       - name: Distribute APK to Firebase App Distribution
-        if: secrets.FIREBASE_SERVICE_ACCOUNT != ''
+        if: steps.check_firebase.outputs.has_sa == 'true'
         env:
           FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID || vars.FIREBASE_ANDROID_APP_ID || '1:1068358115704:android:c8a4fb6728fd21f075288d' }}
           FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS || 'ekip' }}
@@ -106,5 +117,5 @@ jobs:
           fi
           npx -y firebase-tools@latest appdistribution:distribute release-assets/SquadVoice-Android.apk \
             --app "$FIREBASE_ANDROID_APP_ID" \
-            --release-notes "SquadVoice Android otomatik sürüm (${SHORT_SHA}) — arka planda kesintisiz ses servisi." \
+            --release-notes "SquadVoice Android otomatik sürüm (${SHORT_SHA}) — arka planda kesintisiz ses ve ekran paylaşımı." \
             $GROUPS_FLAG || echo "::warning::Firebase App Distribution upload skipped (enable App Distribution in Firebase Console or check service account role Firebase App Distribution Admin)."
