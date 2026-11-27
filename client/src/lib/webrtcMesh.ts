@@ -1,5 +1,10 @@
 import type { AudioSettings, PeerStats, ScreenShareOptions } from '../types/protocol';
 import type { AudioEngine } from './audioEngine';
+import {
+  isNativeAndroidScreenShareSupported,
+  startNativeAndroidScreenShare,
+  stopNativeAndroidScreenShare,
+} from './nativeScreenShare';
 import { findSelectedCandidatePair } from './rtcStats';
 import {
   isInitiatorPeer,
@@ -819,24 +824,41 @@ export class WebRtcMeshManager {
   ): Promise<MediaStream> {
     this.stopScreenShare();
 
-    const displayStream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: { ideal: opts.width, max: opts.width },
-        height: { ideal: opts.height, max: opts.height },
-        frameRate: { ideal: opts.frameRate, max: opts.frameRate },
-      },
-      audio: opts.includeAudio
-        ? ({
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-            // System-audio capture otherwise re-captures this app's own playback (friends'
-            // voices, soundboard), so viewers hear every voice twice with a delay / echo.
-            // Unsupported engines ignore unknown constraints.
-            restrictOwnAudio: true,
-          } as MediaTrackConstraints)
-        : false,
-    });
+    let displayStream: MediaStream;
+    let endedNotified = false;
+    const notifyEndedOnce = () => {
+      if (endedNotified) return;
+      endedNotified = true;
+      this.stopScreenShare();
+      onEndedByBrowser();
+    };
+
+    const hasBrowserDisplayMedia =
+      typeof navigator !== 'undefined' &&
+      Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+
+    if (!hasBrowserDisplayMedia && isNativeAndroidScreenShareSupported()) {
+      displayStream = await startNativeAndroidScreenShare(opts, notifyEndedOnce);
+    } else {
+      displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { ideal: opts.width, max: opts.width },
+          height: { ideal: opts.height, max: opts.height },
+          frameRate: { ideal: opts.frameRate, max: opts.frameRate },
+        },
+        audio: opts.includeAudio
+          ? ({
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+              // System-audio capture otherwise re-captures this app's own playback (friends'
+              // voices, soundboard), so viewers hear every voice twice with a delay / echo.
+              // Unsupported engines ignore unknown constraints.
+              restrictOwnAudio: true,
+            } as MediaTrackConstraints)
+          : false,
+      });
+    }
 
     const videoTrack = displayStream.getVideoTracks()[0];
     if (videoTrack) {
@@ -844,8 +866,7 @@ export class WebRtcMeshManager {
         videoTrack.contentHint = opts.contentHint;
       }
       videoTrack.onended = () => {
-        this.stopScreenShare();
-        onEndedByBrowser();
+        notifyEndedOnce();
       };
     }
 
@@ -895,6 +916,7 @@ export class WebRtcMeshManager {
   }
 
   stopScreenShare() {
+    stopNativeAndroidScreenShare();
     if (this.localScreenStream) {
       for (const track of this.localScreenStream.getTracks()) {
         track.onended = null;

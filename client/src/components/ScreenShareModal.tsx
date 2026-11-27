@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Monitor, X } from 'lucide-react';
+import { isNativeAndroidScreenShareSupported } from '../lib/nativeScreenShare';
 import type { ScreenShareOptions } from '../types/protocol';
 
 interface ScreenShareModalProps {
@@ -47,9 +48,10 @@ const PRESETS: Array<{
 ];
 
 export function ScreenShareModal({ open, onClose, onStart }: ScreenShareModalProps) {
-  const [presetId, setPresetId] = useState('1080p60');
+  const isAndroidNative = isNativeAndroidScreenShareSupported();
+  const [presetId, setPresetId] = useState(isAndroidNative ? '720p30' : '1080p60');
   const [contentHint, setContentHint] = useState<'motion' | 'detail'>('motion');
-  const [includeAudio, setIncludeAudio] = useState(true);
+  const [includeAudio, setIncludeAudio] = useState(!isAndroidNative);
   const [starting, setStarting] = useState(false);
 
   if (!open) return null;
@@ -120,20 +122,30 @@ export function ScreenShareModal({ open, onClose, onStart }: ScreenShareModalPro
             </button>
           </div>
 
-          <label className="toggle-row">
-            <div>
-              <strong>Sistem / Oyun Sesini Paylaş</strong>
-              <p>
-                Windows masaüstünde tüm sistem sesini alır; macOS tarayıcılarda sekme/pencereye
-                göre sistem kısıtı olabilir.
-              </p>
+          {isAndroidNative ? (
+            <div className="diag-box">
+              <span className="muted-text">
+                Android ekran paylaşımı telefon ekranını canlı olarak odaya aktarır (mikrofonun
+                normal şekilde açık kalır). Başlatınca Android&apos;in ekran paylaşım onay penceresi
+                açılır.
+              </span>
             </div>
-            <input
-              type="checkbox"
-              checked={includeAudio}
-              onChange={(e) => setIncludeAudio(e.target.checked)}
-            />
-          </label>
+          ) : (
+            <label className="toggle-row">
+              <div>
+                <strong>Sistem / Oyun Sesini Paylaş</strong>
+                <p>
+                  Windows masaüstünde tüm sistem sesini alır; macOS tarayıcılarda sekme/pencereye
+                  göre sistem kısıtı olabilir.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={includeAudio}
+                onChange={(e) => setIncludeAudio(e.target.checked)}
+              />
+            </label>
+          )}
         </div>
 
         <div className="modal-footer">

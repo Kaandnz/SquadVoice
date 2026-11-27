@@ -63,9 +63,14 @@ Kurmak için GitHub repo → **Settings → Secrets and variables → Actions** 
 
 ---
 
-## 3. Telefonlara Kurulum (iPhone & Android)
-- **iPhone / iPad (iOS — \$0):** Safari'den `https://PROJE_ID.web.app` aç → **Paylaş → Ana Ekrana Ekle**. Tam ekran, bağımsız uygulama gibi çalışır.
-- **Android:** Chrome'dan **Ana Ekrana Ekle** yapabilir veya `cd client && npx tauri android init && npx tauri android build --apk` ile ücretsiz `.apk` üretebilirsin.
+## 3. Telefonlara Kurulum (Android & iOS)
+- **Android (`.apk` — \$0, Arka Planda Kesintisiz Ses):**
+  Capacitor + yerel Android Foreground Service (`VoiceCallService`) dahildir; ekran kapalıyken veya başka uygulamadayken ses kesilmez. [`.github/workflows/build-android.yml`](.github/workflows/build-android.yml) her `main` güncellemesinde `.apk` üretip hem web'deki **İndir** penceresine (GitHub Releases) hem de **Firebase App Distribution**'a otomatik yükler.
+  Yerel derleme:
+  ```bash
+  cd client && npm run build && npx cap sync android && cd android && ./gradlew assembleDebug
+  ```
+- **iPhone / iPad (iOS — \$0):** Safari'den `https://PROJE_ID.web.app` aç → **Paylaş → Ana Ekrana Ekle**. Tam ekran bağımsız uygulama gibi çalışır. *(Ücretli Apple Developer hesabı olmadan Firebase App Distribution üzerinden `.ipa` imzalanamaz; ücretsiz sideload isteyenler AltStore/SideStore kullanabilir.)*
 
 ---
 

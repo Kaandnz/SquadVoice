@@ -1879,12 +1879,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     selfLeavingVoice = false;
+    // Prime silent keep-alive audio synchronously inside the user's tap gesture so
+    // mobile Safari/Chrome permit playback and activate lock-screen MediaSession.
+    mobileVoiceKeepAlive.primeKeepAliveAudio();
 
     try {
       await audioEngine!.unlockAudio();
       const micStream = await audioEngine!.acquireMic(state.audioSettings);
       await rtcMesh!.setMicStream(micStream);
     } catch (err) {
+      mobileVoiceKeepAlive.stop();
       set({
         toastError:
           err instanceof Error

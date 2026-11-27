@@ -34,7 +34,7 @@ import {
   getNoiseSuppressionLabel,
   resolveNoiseSuppressionMode,
 } from '../lib/noiseSuppression';
-import { isTauriRuntime } from '../lib/platform';
+import { isNativeAppRuntime } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
 import { useAppStore } from '../store/useAppStore';
 import { useMicLevelStore } from '../store/useMicLevelStore';
@@ -994,12 +994,12 @@ export function SettingsModal({
                   </div>
                 )}
 
-                {!isTauriRuntime() && onOpenDownload && (
+                {!isNativeAppRuntime() && onOpenDownload && (
                   <div className="diag-box" style={{ gap: 8 }}>
-                    <strong>Masaüstü Uygulaması (Windows &amp; macOS)</strong>
+                    <strong>Masaüstü &amp; Android Uygulaması</strong>
                     <span className="muted-text">
-                      Oyun içindeyken çalışan Global Bas-Konuş ve daha düşük RAM kullanımı için
-                      yerel PC uygulamasını indirebilirsin.
+                      PC&apos;de oyun içi Global Bas-Konuş, Android&apos;de ekran kapalıyken bile
+                      kesintisiz arka plan sesi için yerel uygulamayı indirebilirsin.
                     </span>
                     <button
                       type="button"
@@ -1010,7 +1010,7 @@ export function SettingsModal({
                         onOpenDownload();
                       }}
                     >
-                      <Download size={14} /> PC Uygulamasını İndir
+                      <Download size={14} /> Uygulamayı İndir (PC &amp; Android)
                     </button>
                   </div>
                 )}

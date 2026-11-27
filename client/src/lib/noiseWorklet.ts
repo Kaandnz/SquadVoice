@@ -20,7 +20,54 @@ type SuppressorModule = typeof import('@sapphi-red/web-noise-suppressor');
 let suppressorModulePromise: Promise<SuppressorModule> | null = null;
 const wasmBinaryCache = new Map<'rnnoise' | 'gtcrn', Promise<ArrayBuffer>>();
 let deepFilterModulePromise: Promise<WebAssembly.Module> | null = null;
+let deepFilterWorkletBlobUrlPromise: Promise<string> | null = null;
 const loadedModulesByContext = new WeakMap<AudioContext, Set<AiNoiseSuppressionMode>>();
+
+/**
+ * AudioWorkletGlobalScope omits TextDecoder and crypto.getRandomValues in browsers,
+ * which causes @lofcz/deepfilternet-web's wasm-bindgen glue to throw before
+ * registerProcessor("deepfilternet-processor", ...) executes. Prepending minimal
+ * shims inside a Blob module makes DeepFilterNet 3 initialize cleanly everywhere.
+ */
+const WORKLET_GLOBAL_POLYFILL = `
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = class TextDecoder {
+    decode(bytes) {
+      if (!bytes || !bytes.length) return '';
+      const arr = bytes instanceof Uint8Array
+        ? bytes
+        : new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength || bytes.length);
+      let out = '';
+      for (let i = 0; i < arr.length; i++) {
+        const b = arr[i];
+        if (b < 0x80) {
+          out += String.fromCharCode(b);
+        } else if (b < 0xe0) {
+          out += String.fromCharCode(((b & 0x1f) << 6) | (arr[++i] & 0x3f));
+        } else if (b < 0xf0) {
+          out += String.fromCharCode(((b & 0x0f) << 12) | ((arr[++i] & 0x3f) << 6) | (arr[++i] & 0x3f));
+        } else {
+          const cp = (((b & 0x07) << 18) | ((arr[++i] & 0x3f) << 12) | ((arr[++i] & 0x3f) << 6) | (arr[++i] & 0x3f)) - 0x10000;
+          out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+        }
+      }
+      return out;
+    }
+  };
+}
+if (typeof globalThis.crypto === 'undefined') {
+  globalThis.crypto = {
+    getRandomValues(arr) {
+      for (let i = 0; i < arr.length; i++) arr[i] = (Math.random() * 256) | 0;
+      return arr;
+    },
+  };
+}
+`;
+
+export function buildDeepFilterWorkletSource(rawWorkletSource: string): string {
+  return `${WORKLET_GLOBAL_POLYFILL}\n${rawWorkletSource}`;
+}
 
 /** Lightweight feature check for WebAssembly SIMD (required by DeepFilterNet 3). */
 function supportsWasmSimd(): boolean {
@@ -89,6 +136,25 @@ function loadDeepFilterWasmModule(): Promise<WebAssembly.Module> {
   return deepFilterModulePromise;
 }
 
+function loadDeepFilterWorkletBlobUrl(): Promise<string> {
+  if (!deepFilterWorkletBlobUrlPromise) {
+    deepFilterWorkletBlobUrlPromise = (async () => {
+      const res = await fetch(deepFilterWorkletUrl);
+      if (!res.ok) {
+        throw new Error(`DeepFilterNet 3 worklet dosyası indirilemedi (${res.status}).`);
+      }
+      const rawSource = await res.text();
+      const patched = buildDeepFilterWorkletSource(rawSource);
+      const blob = new Blob([patched], { type: 'application/javascript' });
+      return URL.createObjectURL(blob);
+    })().catch((err) => {
+      deepFilterWorkletBlobUrlPromise = null;
+      throw err;
+    });
+  }
+  return deepFilterWorkletBlobUrlPromise;
+}
+
 async function ensureWorkletModule(ctx: AudioContext, mode: AiNoiseSuppressionMode): Promise<void> {
   let loaded = loadedModulesByContext.get(ctx);
   if (!loaded) {
@@ -99,7 +165,7 @@ async function ensureWorkletModule(ctx: AudioContext, mode: AiNoiseSuppressionMo
 
   const url =
     mode === 'deepfilternet'
-      ? deepFilterWorkletUrl
+      ? await loadDeepFilterWorkletBlobUrl()
       : mode === 'rnnoise'
         ? rnnoiseWorkletUrl
         : gtcrnWorkletUrl;

@@ -19,6 +19,17 @@ client/playwright-report
 client/src-tauri/target
 client/src-tauri/gen
 
+# Android / Capacitor build outputs
+client/android/.gradle
+client/android/build
+client/android/app/build
+client/android/local.properties
+client/android/capacitor-cordova-android-plugins/build
+client/android/app/src/main/assets/public
+client/android/app/google-services.json
+*.keystore
+*.jks
+
 # OS
 .DS_Store
 *.log

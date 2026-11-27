@@ -14,10 +14,10 @@ describe('detectDesktopOs', () => {
     ).toBe('linux');
     expect(
       detectDesktopOs('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', 'iPhone'),
-    ).toBe('mobile');
+    ).toBe('ios');
     expect(
       detectDesktopOs('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36', 'Linux armv8l'),
-    ).toBe('mobile');
+    ).toBe('android');
   });
 });
 
@@ -93,6 +93,11 @@ describe('parseDesktopRelease', () => {
           browser_download_url: 'https://example.com/SquadVoice-macOS-Universal.dmg',
           size: 14_800_000,
         },
+        {
+          name: 'SquadVoice-Android.apk',
+          browser_download_url: 'https://example.com/SquadVoice-Android.apk',
+          size: 4_800_000,
+        },
       ],
     });
 
@@ -100,6 +105,7 @@ describe('parseDesktopRelease', () => {
     expect(parsed.windowsExe?.name).toBe('SquadVoice-Windows-Setup.exe');
     expect(parsed.windowsMsi?.name).toBe('SquadVoice-Windows.msi');
     expect(parsed.macosDmg?.name).toBe('SquadVoice-macOS-Universal.dmg');
+    expect(parsed.androidApk?.name).toBe('SquadVoice-Android.apk');
     expect(parsed.macosDmgIntel).toBeNull();
   });
 });

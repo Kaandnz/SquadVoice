@@ -202,4 +202,12 @@ describe('MobileVoiceKeepAlive', () => {
     await Promise.resolve();
     expect(lateRelease).toHaveBeenCalledTimes(1);
   });
+
+  it('cleans up primed keep-alive audio even if stop is called before start', () => {
+    keepAlive.primeKeepAliveAudio();
+    expect(fakeAudio.play).toHaveBeenCalledTimes(1);
+
+    keepAlive.stop();
+    expect(fakeAudio.pause).toHaveBeenCalledTimes(1);
+  });
 });

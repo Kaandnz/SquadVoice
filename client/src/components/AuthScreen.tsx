@@ -7,7 +7,7 @@ import {
   savePendingInvite,
   stripInviteParam,
 } from '../lib/invite';
-import { isTauriRuntime } from '../lib/platform';
+import { isNativeAppRuntime, isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 import { BrandLogo } from './BrandLogo';
 
@@ -48,7 +48,7 @@ export function AuthScreen() {
   const [resetSuccess, setResetSuccess] = useState<string | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
-  const showDesktopDownload = !isTauriRuntime();
+  const showDesktopDownload = !isNativeAppRuntime();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -295,7 +295,7 @@ export function AuthScreen() {
             onClick={() => setDownloadOpen(true)}
           >
             <Download size={14} />
-            <span>PC Uygulamasını İndir (Windows &amp; macOS)</span>
+            <span>Uygulamayı İndir (Windows, macOS &amp; Android)</span>
           </button>
         )}
       </div>

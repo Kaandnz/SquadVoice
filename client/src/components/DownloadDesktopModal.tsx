@@ -62,6 +62,7 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
   const winSecondary = release?.windowsExe && release?.windowsMsi ? release.windowsMsi : null;
   const macPrimary = release?.macosDmg ?? null;
   const macIntel = release?.macosDmgIntel ?? null;
+  const androidApk = release?.androidApk ?? null;
   const releaseLabel = release
     ? release.version.toLowerCase() === 'latest'
       ? `En güncel sürüm${
@@ -90,11 +91,11 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
           <div className="modal-title">
             <BrandLogo size={32} />
             <div>
-              <h3>SquadVoice PC Uygulaması</h3>
+              <h3>SquadVoice Uygulamasını İndir</h3>
               <div className="muted-text" style={{ fontSize: '0.76rem' }}>
                 {releaseLabel
-                  ? `${releaseLabel} • Ücretsiz Yerel Masaüstü`
-                  : 'Windows & macOS • Hafif Tauri v2 Masaüstü'}
+                  ? `${releaseLabel} • Windows, macOS & Android`
+                  : 'Windows, macOS & Android • Ücretsiz Yerel Uygulama'}
               </div>
             </div>
           </div>
@@ -198,7 +199,7 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
                   </a>
                 )}
                 <span className="muted-text" style={{ fontSize: '0.72rem' }}>
-                  İlk açılışta uyarı çıkarsa uygulamaya sağ tıklayıp &ldquo;Aç&rdquo; demen yeterli.
+                  İlk açılışta uyarı çıkarsa: Sistem Ayarları → Gizlilik ve Güvenlik → &ldquo;Yine de Aç&rdquo;.
                 </span>
               </div>
             ) : (
@@ -210,6 +211,55 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
               >
                 <ExternalLink size={14} />
                 <span>GitHub Releases&apos;tan İndir (.dmg)</span>
+              </a>
+            )}
+          </div>
+
+          <div
+            className={`download-card ${os === 'android' ? 'recommended' : ''}`}
+            style={{ gridColumn: '1 / -1' }}
+          >
+            <div className="download-card-head">
+              <div className="download-card-title">
+                <Smartphone size={18} />
+                <div>
+                  <strong>Android Uygulaması (.apk)</strong>
+                  <div className="muted-text">
+                    Ekran kilitliyken ve oyundayken kesintisiz arka plan sesi (Native Servis)
+                  </div>
+                </div>
+              </div>
+              {os === 'android' && <span className="noise-mode-badge accent">Senin Sistemin</span>}
+            </div>
+
+            {loading ? (
+              <div className="muted-text">Sürüm kontrol ediliyor...</div>
+            ) : androidApk ? (
+              <div className="download-card-actions">
+                <a
+                  href={androidApk.url}
+                  className="primary-btn small download-link-btn"
+                  download
+                >
+                  <Download size={14} />
+                  <span>
+                    Android İndir (.apk)
+                    {androidApk.size ? ` · ${formatFileSize(androidApk.size)}` : ''}
+                  </span>
+                </a>
+                <span className="muted-text" style={{ fontSize: '0.72rem' }}>
+                  Kurulumda &ldquo;Bilinmeyen uygulamalara izin ver&rdquo; çıkarsa onaylayıp tek tıkla kurabilirsin.
+                </span>
+              </div>
+            ) : (
+              <a
+                href={releasesUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="secondary-btn small download-link-btn"
+              >
+                <ExternalLink size={14} />
+                <span>GitHub Releases&apos;tan İndir (.apk)</span>
               </a>
             )}
           </div>
@@ -239,8 +289,8 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
             )}
           </div>
           <span className="muted-text">
-            {os === 'mobile'
-              ? 'iPhone Safari: Paylaş → Ana Ekrana Ekle · Android Chrome: Menü → Uygulamayı Yükle.'
+            {os === 'ios' || os === 'android'
+              ? 'iPhone Safari: Paylaş → Ana Ekrana Ekle · Android için yukarıdan direkt .apk uygulamasını kurmanı öneririz.'
               : 'Kurulum dosyası beklemeden Chrome/Edge adres çubuğundaki "Uygulamayı yükle" ikonuyla masaüstüne bağımsız pencere olarak da sabitleyebilirsin.'}
           </span>
           {pwaNotice && <div className="form-success">{pwaNotice}</div>}

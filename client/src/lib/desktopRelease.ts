@@ -1,4 +1,4 @@
-export type DesktopOs = 'windows' | 'macos' | 'linux' | 'mobile';
+export type DesktopOs = 'windows' | 'macos' | 'linux' | 'android' | 'ios';
 
 export interface ReleaseAsset {
   name: string;
@@ -14,6 +14,7 @@ export interface DesktopReleaseInfo {
   windowsMsi: ReleaseAsset | null;
   macosDmg: ReleaseAsset | null;
   macosDmgIntel: ReleaseAsset | null;
+  androidApk: ReleaseAsset | null;
   linuxAppImage: ReleaseAsset | null;
 }
 
@@ -63,7 +64,8 @@ export function detectDesktopOs(
 ): DesktopOs {
   const ua = userAgent.toLowerCase();
   const plat = platform.toLowerCase();
-  if (/android|iphone|ipad|ipod/.test(ua)) return 'mobile';
+  if (/iphone|ipad|ipod/.test(ua)) return 'ios';
+  if (/android/.test(ua)) return 'android';
   if (ua.includes('mac') || plat.includes('mac')) return 'macos';
   if (ua.includes('win') || plat.includes('win')) return 'windows';
   if (ua.includes('linux') || plat.includes('linux')) return 'linux';
@@ -110,6 +112,8 @@ export function parseDesktopRelease(
   const macosDmgIntel =
     !universalDmg && intelDmg && intelDmg.url !== macosDmg?.url ? intelDmg : null;
 
+  const androidApk = assets.find((a) => lower(a).endsWith('.apk')) ?? null;
+
   const linuxAppImage =
     assets.find((a) => lower(a).endsWith('.appimage')) ??
     assets.find((a) => lower(a).endsWith('.deb')) ??
@@ -123,6 +127,7 @@ export function parseDesktopRelease(
     windowsMsi,
     macosDmg,
     macosDmgIntel,
+    androidApk,
     linuxAppImage,
   };
 }

@@ -12,6 +12,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/core": "^8.6.3",
     "@lofcz/deepfilternet-web": "^0.1.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.2",
     "@tauri-apps/api": "^2.2.0",
@@ -23,6 +25,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.3",
     "@playwright/test": "^1.65.1",
     "@tauri-apps/cli": "^2.2.7",
     "@types/react": "^19.0.8",

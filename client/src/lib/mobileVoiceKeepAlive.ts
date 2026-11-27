@@ -1,3 +1,9 @@
+import {
+  startNativeVoiceService,
+  stopNativeVoiceService,
+  updateNativeVoiceService,
+} from './nativeVoiceService';
+
 export interface MobileKeepAliveStartOptions {
   channelName: string;
   serverName: string;
@@ -140,6 +146,14 @@ export class MobileVoiceKeepAlive {
     return this.active;
   }
 
+  /**
+   * Starts the silent keep-alive <audio> element synchronously inside the user's tap/click
+   * gesture (before async getUserMedia / Firebase awaits expire user activation on mobile).
+   */
+  primeKeepAliveAudio(): void {
+    this.ensureKeepAliveAudio();
+  }
+
   start(options: MobileKeepAliveStartOptions): void {
     this.options = options;
     const wasActive = this.active;
@@ -156,12 +170,20 @@ export class MobileVoiceKeepAlive {
       this.attachLifecycleListeners();
     }
     void this.acquireWakeLock(seq);
+    void startNativeVoiceService({
+      channelName: options.channelName,
+      serverName: options.serverName,
+      muted: options.muted,
+      onToggleMute: options.onToggleMute,
+      onHangup: options.onLeaveVoice,
+    });
   }
 
   updateMetadata(channelName: string, serverName: string): void {
     if (!this.active || !this.options) return;
     this.options = { ...this.options, channelName, serverName };
     this.applyMediaSessionMetadata(channelName, serverName);
+    updateNativeVoiceService({ channelName, serverName });
   }
 
   setMuted(muted: boolean): void {
@@ -174,6 +196,7 @@ export class MobileVoiceKeepAlive {
     } catch {
       // Ignore browsers without setMicrophoneActive
     }
+    updateNativeVoiceService({ muted });
   }
 
   /** Re-attempts silent keep-alive playback (safe to invoke from a user-gesture unlock). */
@@ -184,7 +207,7 @@ export class MobileVoiceKeepAlive {
   }
 
   stop(): void {
-    if (!this.active) return;
+    if (!this.active && !this.audioEl && !this.wakeLock) return;
     this.active = false;
     this.opSeq += 1;
     this.options = null;
@@ -198,6 +221,7 @@ export class MobileVoiceKeepAlive {
     this.teardownKeepAliveAudio();
     this.clearMediaSession();
     this.releaseWakeLock();
+    stopNativeVoiceService();
   }
 
   private setPlaybackState(state: 'none' | 'paused' | 'playing'): void {

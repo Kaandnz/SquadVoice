@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { MAX_ROOM_MEMBERS } from '../lib/firebaseBackend';
 import { currentInviteLink } from '../lib/invite';
-import { isTauriRuntime } from '../lib/platform';
+import { isNativeAppRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 import type { SettingsTabId, UserStatus } from '../types/protocol';
 import { BrandLogo } from './BrandLogo';
@@ -177,12 +177,12 @@ export function Sidebar({
             >
               <Plus size={19} />
             </button>
-            {!isTauriRuntime() && (
+            {!isNativeAppRuntime() && (
               <button
                 type="button"
                 className="server-rail-btn server-rail-download"
-                title="PC Uygulamasını İndir (Windows & macOS)"
-                aria-label="PC Uygulamasını İndir"
+                title="Uygulamayı İndir (Windows, macOS & Android)"
+                aria-label="Uygulamayı İndir"
                 onClick={() => {
                   onOpenDownload();
                   onCloseMobile();
@@ -214,11 +214,11 @@ export function Sidebar({
             </div>
           </div>
           <div className="row-gap">
-            {!firebaseMode && !isTauriRuntime() && (
+            {!firebaseMode && !isNativeAppRuntime() && (
               <button
                 type="button"
                 className="icon-btn"
-                title="PC Uygulamasını İndir (Windows & macOS)"
+                title="Uygulamayı İndir (Windows, macOS & Android)"
                 onClick={() => {
                   onOpenDownload();
                   onCloseMobile();

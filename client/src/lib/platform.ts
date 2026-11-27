@@ -1,7 +1,14 @@
+import { isNativeAndroidScreenShareSupported } from './nativeScreenShare';
+import { isNativeMobileRuntime } from './nativeVoiceService';
+
 const SERVER_URL_STORAGE_KEY = 'squadvoice_server_url';
 
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+export function isNativeAppRuntime(): boolean {
+  return isTauriRuntime() || isNativeMobileRuntime();
 }
 
 export function isDesktopPlatform(): boolean {
@@ -46,6 +53,7 @@ export function resolveAssetUrl(serverUrl: string, pathOrUrl: string): string {
 }
 
 export function canUseDisplayMedia(): boolean {
+  if (isNativeAndroidScreenShareSupported()) return true;
   return (
     typeof navigator !== 'undefined' &&
     Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function')
