@@ -1,22 +1,29 @@
 name: Build Desktop Apps (Windows & macOS)
 
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'client/**'
+      - '.github/workflows/build-desktop.yml'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: build-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-tauri:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
-            rust_targets: ''
+            rust_targets: x86_64-pc-windows-msvc
             args: ''
           - platform: macos-latest
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -48,10 +55,9 @@ jobs:
         working-directory: client
         run: npm ci
 
-      - name: Build Tauri application
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri installers
+        working-directory: client
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_DATABASE_URL: ${{ secrets.VITE_FIREBASE_DATABASE_URL || vars.VITE_FIREBASE_DATABASE_URL }}
@@ -61,11 +67,51 @@ jobs:
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID }}
           VITE_DEFAULT_INVITE_CODE: ${{ secrets.VITE_DEFAULT_INVITE_CODE || vars.VITE_DEFAULT_INVITE_CODE || 'SQUAD-2026' }}
           VITE_TURN_WORKER_URL: ${{ secrets.VITE_TURN_WORKER_URL || vars.VITE_TURN_WORKER_URL }}
+        run: npx tauri build ${{ matrix.args }}
+
+      - name: Collect installers with stable filenames
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          exe=$(find client/src-tauri/target -path '*/bundle/nsis/*.exe' | head -n 1 || true)
+          if [ -n "$exe" ]; then cp "$exe" release-assets/SquadVoice-Windows-Setup.exe; fi
+          msi=$(find client/src-tauri/target -path '*/bundle/msi/*.msi' | head -n 1 || true)
+          if [ -n "$msi" ]; then cp "$msi" release-assets/SquadVoice-Windows.msi; fi
+          dmg=$(find client/src-tauri/target -path '*/bundle/dmg/*.dmg' | head -n 1 || true)
+          if [ -n "$dmg" ]; then cp "$dmg" release-assets/SquadVoice-macOS-Universal.dmg; fi
+          ls -lh release-assets/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: client
-          tagName: v__VERSION__
-          releaseName: 'SquadVoice v__VERSION__'
-          releaseBody: 'Windows (.exe / .msi) ve macOS Universal (.dmg) masaüstü kurulum dosyaları.'
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: desktop-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish rolling latest GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          ls -lh release-assets/
+          SHORT_SHA="${SHA:0:7}"
+          NOTES="Windows (.exe / .msi) ve macOS Universal (.dmg) kurulum dosyaları. Son güncelleme: \`${SHORT_SHA}\` (her main güncellemesinde otomatik yenilenir)."
+          if gh release view latest --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload latest release-assets/* --repo "$REPO" --clobber
+            gh release edit latest --repo "$REPO" --latest --title "SquadVoice Masaüstü (En Güncel)" --notes "$NOTES"
+          else
+            gh release create latest release-assets/* --repo "$REPO" --target "$SHA" --latest --title "SquadVoice Masaüstü (En Güncel)" --notes "$NOTES"
+          fi

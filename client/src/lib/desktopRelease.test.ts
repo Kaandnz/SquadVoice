@@ -73,6 +73,35 @@ describe('parseDesktopRelease', () => {
     expect(parsed.macosDmg?.url).toBe('https://example.com/mac-arm.dmg');
     expect(parsed.macosDmgIntel?.url).toBe('https://example.com/mac-intel.dmg');
   });
+
+  it('parses automated rolling latest release asset names', () => {
+    const parsed = parseDesktopRelease({
+      tag_name: 'latest',
+      assets: [
+        {
+          name: 'SquadVoice-Windows-Setup.exe',
+          browser_download_url: 'https://example.com/SquadVoice-Windows-Setup.exe',
+          size: 10_400_000,
+        },
+        {
+          name: 'SquadVoice-Windows.msi',
+          browser_download_url: 'https://example.com/SquadVoice-Windows.msi',
+          size: 11_100_000,
+        },
+        {
+          name: 'SquadVoice-macOS-Universal.dmg',
+          browser_download_url: 'https://example.com/SquadVoice-macOS-Universal.dmg',
+          size: 14_800_000,
+        },
+      ],
+    });
+
+    expect(parsed.version).toBe('latest');
+    expect(parsed.windowsExe?.name).toBe('SquadVoice-Windows-Setup.exe');
+    expect(parsed.windowsMsi?.name).toBe('SquadVoice-Windows.msi');
+    expect(parsed.macosDmg?.name).toBe('SquadVoice-macOS-Universal.dmg');
+    expect(parsed.macosDmgIntel).toBeNull();
+  });
 });
 
 describe('formatFileSize', () => {

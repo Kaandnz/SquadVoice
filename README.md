@@ -58,8 +58,8 @@ Kurmak için GitHub repo → **Settings → Secrets and variables → Actions** 
   cd client
   npm run tauri build
   ```
-- **Windows (`.exe` / `.msi`) — Ücretsiz GitHub Actions ile:**
-  Projede hazır [`.github/workflows/build-desktop.yml`](.github/workflows/build-desktop.yml) dosyası var. Repo Secrets kısmına `VITE_FIREBASE_*` değerlerini ekleyip GitHub Actions sekmesinden **Build Desktop Apps**'i tetiklemen yeterli — hem Windows `.exe` hem macOS `.dmg` otomatik derlenir.
+- **Windows (`.exe` / `.msi`) & macOS Universal (`.dmg`) — Otomatik GitHub Actions:**
+  [`.github/workflows/build-desktop.yml`](.github/workflows/build-desktop.yml) dosyası `main` dalına `client/` güncellemesi geldiğinde otomatik çalışır; hem Windows `.exe`/`.msi` hem macOS Universal `.dmg` (Apple Silicon + Intel) paketlerini derleyip GitHub Releases (`latest`) altına otomatik yayınlar. Web uygulamasındaki **PC Uygulamasını İndir** penceresi bu dosyaları otomatik çeker.
 
 ---
 

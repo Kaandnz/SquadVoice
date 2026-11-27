@@ -62,6 +62,19 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
   const winSecondary = release?.windowsExe && release?.windowsMsi ? release.windowsMsi : null;
   const macPrimary = release?.macosDmg ?? null;
   const macIntel = release?.macosDmgIntel ?? null;
+  const releaseLabel = release
+    ? release.version.toLowerCase() === 'latest'
+      ? `En güncel sürüm${
+          release.publishedAt
+            ? ` · ${new Date(release.publishedAt).toLocaleDateString('tr-TR', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })}`
+            : ''
+        }`
+      : `Son sürüm: ${release.version}`
+    : null;
 
   const handlePwaInstall = async () => {
     const outcome = await triggerPwaInstall();
@@ -79,8 +92,8 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
             <div>
               <h3>SquadVoice PC Uygulaması</h3>
               <div className="muted-text" style={{ fontSize: '0.76rem' }}>
-                {release
-                  ? `Son sürüm: ${release.version} • Ücretsiz Yerel Masaüstü`
+                {releaseLabel
+                  ? `${releaseLabel} • Ücretsiz Yerel Masaüstü`
                   : 'Windows & macOS • Hafif Tauri v2 Masaüstü'}
               </div>
             </div>
@@ -203,10 +216,13 @@ export function DownloadDesktopModal({ open, onClose }: DownloadDesktopModalProp
         </div>
 
         {!loading && result?.status === 'no-release' && (
-          <div className="noise-mode-warning">
-            Henüz yayınlanmış bir PC kurulum sürümü bulunamadı. Repo sahibinin GitHub Actions
-            üzerinden <strong>Build Desktop Apps</strong> işini çalıştırması veya <code>v0.1.0</code>{' '}
-            etiketi atmasıyla indirme linkleri burada otomatik olarak direkt tek tık indirmeye döner.
+          <div className="diag-box">
+            <span className="muted-text">
+              İlk masaüstü kurulum paketi henüz derleniyor — <code>main</code> dalına güncellemeler
+              gittiğinde Windows (.exe) ve macOS (.dmg) paketleri otomatik oluşup burada tek tıkla
+              indirilebilir hale gelir. O zamana kadar aşağıdaki PWA seçeneğiyle tarayıcıdan hemen
+              masaüstü uygulaması gibi kurabilirsin.
+            </span>
           </div>
         )}
 
