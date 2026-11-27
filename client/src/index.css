@@ -416,6 +416,29 @@ button {
   font-size: 0.78rem;
 }
 
+.auth-download-btn {
+  margin-top: 12px;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(88, 101, 242, 0.12);
+  border: 1px solid rgba(88, 101, 242, 0.34);
+  color: #c9cdfb;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.auth-download-btn:hover {
+  background: rgba(88, 101, 242, 0.22);
+  border-color: rgba(88, 101, 242, 0.6);
+  color: #fff;
+}
+
 /* Main App Layout */
 .app-shell {
   display: flex;
@@ -518,6 +541,92 @@ button {
   background: var(--green) !important;
   color: #fff;
   border-color: transparent;
+}
+
+.server-rail-download {
+  margin-top: auto;
+  background: var(--bg-2) !important;
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.server-rail-download:hover {
+  background: #0284c7 !important;
+  color: #fff;
+  border-color: transparent;
+}
+
+.download-perks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.download-perk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.download-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.download-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.download-card.recommended {
+  border-color: rgba(88, 101, 242, 0.6);
+  background: linear-gradient(180deg, rgba(88, 101, 242, 0.14), var(--bg-1));
+}
+
+.download-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.download-card-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.download-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.download-link-btn {
+  text-decoration: none;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .download-cards {
+    grid-template-columns: 1fr;
+  }
 }
 
 .sidebar-main {

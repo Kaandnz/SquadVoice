@@ -14,10 +14,14 @@ import type { SettingsTabId } from './types/protocol';
 
 const loadSettingsModal = () => import('./components/SettingsModal');
 const loadScreenShareModal = () => import('./components/ScreenShareModal');
+const loadDownloadDesktopModal = () => import('./components/DownloadDesktopModal');
 
 const SettingsModal = lazy(() => loadSettingsModal().then((m) => ({ default: m.SettingsModal })));
 const ScreenShareModal = lazy(() =>
   loadScreenShareModal().then((m) => ({ default: m.ScreenShareModal })),
+);
+const DownloadDesktopModal = lazy(() =>
+  loadDownloadDesktopModal().then((m) => ({ default: m.DownloadDesktopModal })),
 );
 
 const PRELOAD_DIALOGS_AFTER_MS = 3000;
@@ -42,6 +46,7 @@ export function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTabId | null>(null);
   const [roomHubTab, setRoomHubTab] = useState<'join' | 'create' | null>(null);
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false);
 
   useEffect(() => {
     bootstrap();
@@ -64,6 +69,7 @@ export function App() {
         setSettingsTab(null);
         setRoomHubTab(null);
         setShareModalOpen(false);
+        setDownloadModalOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -94,6 +100,7 @@ export function App() {
           onCloseMobile={() => setMobileSidebarOpen(false)}
           onOpenSettings={(tab = 'audio') => setSettingsTab(tab)}
           onOpenRoomHub={(tab) => setRoomHubTab(tab)}
+          onOpenDownload={() => setDownloadModalOpen(true)}
         />
       </ErrorBoundary>
 
@@ -184,7 +191,15 @@ export function App() {
               initialTab={settingsTab}
               onClose={() => setSettingsTab(null)}
               onOpenRoomHub={(tab) => setRoomHubTab(tab)}
+              onOpenDownload={() => setDownloadModalOpen(true)}
             />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {downloadModalOpen && (
+        <ErrorBoundary area="PC Uygulaması">
+          <Suspense fallback={null}>
+            <DownloadDesktopModal open onClose={() => setDownloadModalOpen(false)} />
           </Suspense>
         </ErrorBoundary>
       )}

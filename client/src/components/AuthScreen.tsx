@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useState } from 'react';
-import { KeyRound, Server, ShieldCheck } from 'lucide-react';
+import { FormEvent, lazy, Suspense, useEffect, useState } from 'react';
+import { Download, KeyRound, Server, ShieldCheck } from 'lucide-react';
 import {
   extractInviteCode,
   peekPendingInvite,
@@ -10,6 +10,10 @@ import {
 import { isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 import { BrandLogo } from './BrandLogo';
+
+const DownloadDesktopModal = lazy(() =>
+  import('./DownloadDesktopModal').then((m) => ({ default: m.DownloadDesktopModal })),
+);
 
 export function AuthScreen() {
   const { firebaseMode, serverUrl, authError, authLoading, login, register, resetPassword } =
@@ -43,6 +47,8 @@ export function AuthScreen() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetSuccess, setResetSuccess] = useState<string | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
+  const showDesktopDownload = !isTauriRuntime();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -281,7 +287,24 @@ export function AuthScreen() {
               : 'Ücretsiz • WebRTC P2P Mesh • Maksimum 10 Kişi'}
           </span>
         </div>
+
+        {showDesktopDownload && (
+          <button
+            type="button"
+            className="auth-download-btn"
+            onClick={() => setDownloadOpen(true)}
+          >
+            <Download size={14} />
+            <span>PC Uygulamasını İndir (Windows &amp; macOS)</span>
+          </button>
+        )}
       </div>
+
+      {downloadOpen && (
+        <Suspense fallback={null}>
+          <DownloadDesktopModal open onClose={() => setDownloadOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
