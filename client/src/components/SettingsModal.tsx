@@ -4,6 +4,7 @@ import {
   Camera,
   Copy,
   Crown,
+  Download,
   KeyRound,
   Link2,
   LogOut,
@@ -33,6 +34,7 @@ import {
   getNoiseSuppressionLabel,
   resolveNoiseSuppressionMode,
 } from '../lib/noiseSuppression';
+import { isTauriRuntime } from '../lib/platform';
 import { playSoundboard, playUiSound } from '../lib/sounds';
 import { useAppStore } from '../store/useAppStore';
 import { useMicLevelStore } from '../store/useMicLevelStore';
@@ -88,6 +90,7 @@ interface SettingsModalProps {
   initialTab?: SettingsTabId;
   onClose: () => void;
   onOpenRoomHub?: (tab: 'join' | 'create') => void;
+  onOpenDownload?: () => void;
 }
 
 export function SettingsModal({
@@ -95,6 +98,7 @@ export function SettingsModal({
   initialTab = 'audio',
   onClose,
   onOpenRoomHub,
+  onOpenDownload,
 }: SettingsModalProps) {
   const {
     firebaseMode,
@@ -987,6 +991,27 @@ export function SettingsModal({
                         </ConfirmButton>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {!isTauriRuntime() && onOpenDownload && (
+                  <div className="diag-box" style={{ gap: 8 }}>
+                    <strong>Masaüstü Uygulaması (Windows &amp; macOS)</strong>
+                    <span className="muted-text">
+                      Oyun içindeyken çalışan Global Bas-Konuş ve daha düşük RAM kullanımı için
+                      yerel PC uygulamasını indirebilirsin.
+                    </span>
+                    <button
+                      type="button"
+                      className="primary-btn small"
+                      style={{ alignSelf: 'flex-start' }}
+                      onClick={() => {
+                        onClose();
+                        onOpenDownload();
+                      }}
+                    >
+                      <Download size={14} /> PC Uygulamasını İndir
+                    </button>
                   </div>
                 )}
               </div>

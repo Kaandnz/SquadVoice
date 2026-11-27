@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import {
   Check,
   Crown,
+  Download,
   Hash,
   HeadphoneOff,
   Headphones,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react';
 import { MAX_ROOM_MEMBERS } from '../lib/firebaseBackend';
 import { currentInviteLink } from '../lib/invite';
+import { isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 import type { SettingsTabId, UserStatus } from '../types/protocol';
 import { BrandLogo } from './BrandLogo';
@@ -31,6 +33,7 @@ interface SidebarProps {
   onCloseMobile: () => void;
   onOpenSettings: (tab?: SettingsTabId) => void;
   onOpenRoomHub: (tab: 'join' | 'create') => void;
+  onOpenDownload: () => void;
 }
 
 const STATUS_DOT: Record<UserStatus, string> = {
@@ -45,6 +48,7 @@ export function Sidebar({
   onCloseMobile,
   onOpenSettings,
   onOpenRoomHub,
+  onOpenDownload,
 }: SidebarProps) {
   const {
     firebaseMode,
@@ -173,6 +177,20 @@ export function Sidebar({
             >
               <Plus size={19} />
             </button>
+            {!isTauriRuntime() && (
+              <button
+                type="button"
+                className="server-rail-btn server-rail-download"
+                title="PC Uygulamasını İndir (Windows & macOS)"
+                aria-label="PC Uygulamasını İndir"
+                onClick={() => {
+                  onOpenDownload();
+                  onCloseMobile();
+                }}
+              >
+                <Download size={18} />
+              </button>
+            )}
           </div>
         )}
 
@@ -196,6 +214,19 @@ export function Sidebar({
             </div>
           </div>
           <div className="row-gap">
+            {!firebaseMode && !isTauriRuntime() && (
+              <button
+                type="button"
+                className="icon-btn"
+                title="PC Uygulamasını İndir (Windows & macOS)"
+                onClick={() => {
+                  onOpenDownload();
+                  onCloseMobile();
+                }}
+              >
+                <Download size={16} />
+              </button>
+            )}
             {firebaseMode && activeRoomId && adminInviteCode && (
               <button
                 type="button"
