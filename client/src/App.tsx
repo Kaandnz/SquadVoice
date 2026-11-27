@@ -1,26 +1,20 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { Menu, X } from 'lucide-react';
+import { Link2, Menu, Plus, Sparkles, X } from 'lucide-react';
 import { AuthScreen } from './components/AuthScreen';
 import { ChatPanel } from './components/ChatPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { MemberList } from './components/MemberList';
 import { OtherDeviceCallBanner } from './components/OtherDeviceCallBanner';
+import { RoomHubModal } from './components/RoomHubModal';
 import { Sidebar } from './components/Sidebar';
 import { VoiceStage } from './components/VoiceStage';
 import { useAppStore } from './store/useAppStore';
+import type { SettingsTabId } from './types/protocol';
 
-// Dialogs aren't needed for the first paint: load them on demand (and warm them up
-// shortly after start so the first open is still instant).
 const loadSettingsModal = () => import('./components/SettingsModal');
-const loadAdminPanelModal = () => import('./components/AdminPanelModal');
-const loadProfileModal = () => import('./components/ProfileModal');
 const loadScreenShareModal = () => import('./components/ScreenShareModal');
 
 const SettingsModal = lazy(() => loadSettingsModal().then((m) => ({ default: m.SettingsModal })));
-const AdminPanelModal = lazy(() =>
-  loadAdminPanelModal().then((m) => ({ default: m.AdminPanelModal })),
-);
-const ProfileModal = lazy(() => loadProfileModal().then((m) => ({ default: m.ProfileModal })));
 const ScreenShareModal = lazy(() =>
   loadScreenShareModal().then((m) => ({ default: m.ScreenShareModal })),
 );
@@ -29,7 +23,10 @@ const PRELOAD_DIALOGS_AFTER_MS = 3000;
 
 export function App() {
   const {
+    firebaseMode,
     serverName,
+    activeRoomId,
+    rooms,
     user,
     authLoading,
     activeVoiceChannelId,
@@ -41,9 +38,8 @@ export function App() {
   } = useAppStore();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId | null>(null);
+  const [roomHubTab, setRoomHubTab] = useState<'join' | 'create' | null>(null);
   const [shareModalOpen, setShareModalOpen] = useState(false);
 
   useEffect(() => {
@@ -54,13 +50,7 @@ export function App() {
   useEffect(() => {
     if (!signedIn) return;
     const timer = window.setTimeout(() => {
-      // Failures are fine here: opening the dialog retries and the boundary reports it
-      for (const load of [
-        loadSettingsModal,
-        loadProfileModal,
-        loadScreenShareModal,
-        loadAdminPanelModal,
-      ]) {
+      for (const load of [loadSettingsModal, loadScreenShareModal]) {
         load().catch(() => {});
       }
     }, PRELOAD_DIALOGS_AFTER_MS);
@@ -70,9 +60,8 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setSettingsOpen(false);
-        setAdminOpen(false);
-        setProfileOpen(false);
+        setSettingsTab(null);
+        setRoomHubTab(null);
         setShareModalOpen(false);
       }
     };
@@ -93,15 +82,16 @@ export function App() {
     return <AuthScreen />;
   }
 
+  const needsRoom = firebaseMode && !activeRoomId && rooms.length === 0;
+
   return (
     <div className="app-shell">
       <ErrorBoundary area="Kanal listesi">
         <Sidebar
           mobileOpen={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenAdmin={() => setAdminOpen(true)}
-          onOpenProfile={() => setProfileOpen(true)}
+          onOpenSettings={(tab = 'audio') => setSettingsTab(tab)}
+          onOpenRoomHub={(tab) => setRoomHubTab(tab)}
         />
       </ErrorBoundary>
 
@@ -115,7 +105,7 @@ export function App() {
           >
             <Menu size={20} />
           </button>
-          <strong>{serverName}</strong>
+          <strong>{activeRoomId || !firebaseMode ? serverName : 'SquadVoice'}</strong>
           <span className="mobile-status">
             {activeVoiceChannelId ? 'Seste' : 'Sohbet'}
           </span>
@@ -138,42 +128,73 @@ export function App() {
           </div>
         )}
 
-        <ErrorBoundary area="Cihaz bildirimi">
-          <OtherDeviceCallBanner />
-        </ErrorBoundary>
-        <ErrorBoundary area="Ses odası">
-          <VoiceStage onOpenShareModal={() => setShareModalOpen(true)} />
-        </ErrorBoundary>
+        {needsRoom ? (
+          <div className="no-room-empty">
+            <div className="brand-badge" style={{ width: 56, height: 56, borderRadius: 16 }}>
+              <Sparkles size={28} />
+            </div>
+            <h2>Hoş geldin, {user.display_name}!</h2>
+            <p className="muted-text">
+              Henüz bir odada değilsin. Arkadaşından gelen davet linkiyle anında katılabilir veya
+              kendi 10 kişilik sunucunu oluşturup davet linki paylaşabilirsin.
+            </p>
+            <div className="row-gap" style={{ marginTop: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => setRoomHubTab('join')}
+              >
+                <Link2 size={16} /> Davet Linkiyle Katıl
+              </button>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => setRoomHubTab('create')}
+              >
+                <Plus size={16} /> Yeni Oda Oluştur
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <ErrorBoundary area="Cihaz bildirimi">
+              <OtherDeviceCallBanner />
+            </ErrorBoundary>
+            <ErrorBoundary area="Ses odası">
+              <VoiceStage onOpenShareModal={() => setShareModalOpen(true)} />
+            </ErrorBoundary>
 
-        <div className="chat-and-members">
-          <ErrorBoundary area="Sohbet">
-            <ChatPanel />
-          </ErrorBoundary>
-          <ErrorBoundary area="Üye listesi">
-            <MemberList />
-          </ErrorBoundary>
-        </div>
+            <div className="chat-and-members">
+              <ErrorBoundary area="Sohbet">
+                <ChatPanel />
+              </ErrorBoundary>
+              <ErrorBoundary area="Üye listesi">
+                <MemberList />
+              </ErrorBoundary>
+            </div>
+          </>
+        )}
       </main>
 
-      {settingsOpen && (
+      {settingsTab && (
         <ErrorBoundary area="Ayarlar">
           <Suspense fallback={null}>
-            <SettingsModal open onClose={() => setSettingsOpen(false)} />
+            <SettingsModal
+              open
+              initialTab={settingsTab}
+              onClose={() => setSettingsTab(null)}
+              onOpenRoomHub={(tab) => setRoomHubTab(tab)}
+            />
           </Suspense>
         </ErrorBoundary>
       )}
-      {adminOpen && (
-        <ErrorBoundary area="Admin paneli">
-          <Suspense fallback={null}>
-            <AdminPanelModal open onClose={() => setAdminOpen(false)} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
-      {profileOpen && (
-        <ErrorBoundary area="Profil">
-          <Suspense fallback={null}>
-            <ProfileModal open onClose={() => setProfileOpen(false)} />
-          </Suspense>
+      {roomHubTab && (
+        <ErrorBoundary area="Oda ekle">
+          <RoomHubModal
+            open
+            initialTab={roomHubTab}
+            onClose={() => setRoomHubTab(null)}
+          />
         </ErrorBoundary>
       )}
       {shareModalOpen && (

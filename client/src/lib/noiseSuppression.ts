@@ -1,6 +1,6 @@
 import type { AudioSettings, NoiseSuppressionMode } from '../types/protocol';
 
-export type AiNoiseSuppressionMode = 'rnnoise' | 'gtcrn';
+export type AiNoiseSuppressionMode = 'rnnoise' | 'gtcrn' | 'deepfilternet';
 
 export interface NoiseSuppressionOption {
   id: NoiseSuppressionMode;
@@ -18,31 +18,44 @@ export const NOISE_SUPPRESSION_OPTIONS: ReadonlyArray<NoiseSuppressionOption> = 
   {
     id: 'standard',
     label: 'Standart',
-    badge: 'Önerilen',
+    badge: 'En Hafif',
     description: 'Tarayıcı / sistem motoru (WebRTC NS). Sıfır ekstra yük, mobil & Bluetooth uyumlu.',
   },
   {
     id: 'rnnoise',
     label: 'RNNoise AI',
     badge: 'Hafif AI',
-    description: 'Jitsi standardı yapay zeka (WASM). Fan ve dip gürültüsünde ultra düşük CPU.',
+    description: 'Jitsi standardı yapay zeka (~150 KB WASM). Fan ve dip gürültüsünde ultra düşük CPU.',
   },
   {
     id: 'gtcrn',
     label: 'GTCRN AI',
-    badge: 'Krisp Modu',
-    description: 'Derin öğrenme filtresi (48 kHz WASM). Klavye ve arka plan seslerinde en güçlü temizlik.',
+    badge: 'Hızlı AI',
+    description: 'Yeni nesil derin öğrenme (~192 KB WASM). Klavye ve arka plan seslerinde çok hafif & güçlü.',
+  },
+  {
+    id: 'deepfilternet',
+    label: 'DeepFilterNet 3',
+    badge: 'Stüdyo / Krisp',
+    description:
+      '48 kHz tam bant Rust WASM yapay zeka. En sert klavye, yankı ve ortam seslerinde stüdyo kalitesi (ilk seçimde indirilir).',
   },
 ];
 
 export function isValidNoiseSuppressionMode(value: unknown): value is NoiseSuppressionMode {
-  return value === 'off' || value === 'standard' || value === 'rnnoise' || value === 'gtcrn';
+  return (
+    value === 'off' ||
+    value === 'standard' ||
+    value === 'rnnoise' ||
+    value === 'gtcrn' ||
+    value === 'deepfilternet'
+  );
 }
 
 export function isAiNoiseSuppressionMode(
   mode: NoiseSuppressionMode,
 ): mode is AiNoiseSuppressionMode {
-  return mode === 'rnnoise' || mode === 'gtcrn';
+  return mode === 'rnnoise' || mode === 'gtcrn' || mode === 'deepfilternet';
 }
 
 export function getNoiseSuppressionLabel(mode: NoiseSuppressionMode): string {
@@ -76,7 +89,10 @@ export function mergeAudioSettings(
   const merged = { ...base, ...patch };
   let mode: NoiseSuppressionMode;
 
-  if (patch.noiseSuppressionMode !== undefined && isValidNoiseSuppressionMode(patch.noiseSuppressionMode)) {
+  if (
+    patch.noiseSuppressionMode !== undefined &&
+    isValidNoiseSuppressionMode(patch.noiseSuppressionMode)
+  ) {
     mode = patch.noiseSuppressionMode;
   } else if (patch.noiseSuppression !== undefined && patch.noiseSuppressionMode === undefined) {
     mode = patch.noiseSuppression ? 'standard' : 'off';
@@ -113,7 +129,7 @@ export function buildMicTrackConstraints(
  * Checks whether an AudioContext sample rate is supported by the given WASM worklet.
  */
 export function isSampleRateCompatible(mode: AiNoiseSuppressionMode, sampleRate: number): boolean {
-  if (mode === 'rnnoise') {
+  if (mode === 'rnnoise' || mode === 'deepfilternet') {
     return sampleRate === 48000;
   }
   return sampleRate === 48000 || sampleRate === 16000;

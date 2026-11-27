@@ -1,14 +1,23 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { KeyRound, Server, ShieldCheck, Sparkles } from 'lucide-react';
-import { readInviteCode, stripInviteParam } from '../lib/invite';
+import {
+  extractInviteCode,
+  peekPendingInvite,
+  readInviteCode,
+  savePendingInvite,
+  stripInviteParam,
+} from '../lib/invite';
 import { isTauriRuntime } from '../lib/platform';
 import { useAppStore } from '../store/useAppStore';
 
 export function AuthScreen() {
   const { firebaseMode, serverUrl, authError, authLoading, login, register, resetPassword } =
     useAppStore();
-  // Opened from an invite link (?davet=CODE): go straight to sign-up with the code filled in
-  const [linkedInvite] = useState(() => readInviteCode(window.location.search));
+
+  // Opened from an invite link (?davet=CODE) or carried over via sessionStorage
+  const [linkedInvite] = useState(
+    () => readInviteCode(window.location.search) ?? peekPendingInvite(),
+  );
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>(
     linkedInvite ? 'register' : 'login',
   );
@@ -16,15 +25,18 @@ export function AuthScreen() {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  // Never bake the real code into the bundle (anyone opening the site could read it);
-  // it only comes from a link someone chose to share.
   const [inviteCode, setInviteCode] = useState(linkedInvite ?? '');
 
   useEffect(() => {
-    if (linkedInvite) {
+    const fromUrl = readInviteCode(window.location.search);
+    if (fromUrl) {
+      savePendingInvite(fromUrl);
       window.history.replaceState(window.history.state, '', stripInviteParam(window.location.href));
+    } else if (linkedInvite) {
+      savePendingInvite(linkedInvite);
     }
   }, [linkedInvite]);
+
   const [customUrl, setCustomUrl] = useState(serverUrl);
   const [showServerField, setShowServerField] = useState(!firebaseMode && isTauriRuntime());
   const [localError, setLocalError] = useState<string | null>(null);
@@ -40,12 +52,13 @@ export function AuthScreen() {
       if (mode === 'login') {
         await login(username, password, showServerField ? customUrl : undefined);
       } else if (mode === 'register') {
+        const cleanCode = extractInviteCode(inviteCode) ?? '';
         await register(
           username,
           displayName || username,
           email,
           password,
-          inviteCode,
+          cleanCode,
           showServerField ? customUrl : undefined,
         );
       } else {
@@ -73,7 +86,7 @@ export function AuthScreen() {
           </div>
           <div>
             <h1>SquadVoice</h1>
-            <p>5 kişilik özel, düşük gecikmeli ses &amp; yayın odası</p>
+            <p>10 kişilik özel odalar, düşük gecikmeli ses &amp; yayın</p>
           </div>
         </div>
 
@@ -110,11 +123,12 @@ export function AuthScreen() {
         )}
 
         <form onSubmit={handleSubmit} className="auth-form">
-          {mode === 'register' && linkedInvite && inviteCode === linkedInvite && (
+          {linkedInvite && mode !== 'reset' && (
             <div className="form-success" role="status">
-              Davet linkiyle geldin — davet kodu hazır, sadece hesabını oluştur.
+              Davet linkiyle geldin — {mode === 'login' ? 'giriş yapınca' : 'hesap oluşturunca'} odaya otomatik katılacaksın.
             </div>
           )}
+
           {mode !== 'reset' && (
             <label>
               <span>{mode === 'login' ? 'E-posta veya Kullanıcı Adı' : 'Kullanıcı Adı'}</span>
@@ -188,13 +202,19 @@ export function AuthScreen() {
 
           {mode === 'register' && (
             <label>
-              <span>Davet Kodu</span>
+              <span>
+                {firebaseMode ? 'Davet Kodu veya Linki (Opsiyonel)' : 'Davet Kodu'}
+              </span>
               <input
                 type="text"
                 value={inviteCode}
                 onChange={(e) => setInviteCode(e.target.value)}
-                placeholder="Arkadaşından aldığın davet kodu"
-                required
+                placeholder={
+                  firebaseMode
+                    ? 'Boş bırakabilir veya davet linki yapıştırabilirsin'
+                    : 'Arkadaşından aldığın davet kodu'
+                }
+                required={!firebaseMode}
               />
             </label>
           )}
@@ -235,7 +255,7 @@ export function AuthScreen() {
               : authLoading
                 ? 'Bağlanılıyor...'
                 : mode === 'login'
-                  ? 'Odaya Gir'
+                  ? 'Giriş Yap'
                   : 'Hesap Oluştur'}
           </button>
 
@@ -258,8 +278,8 @@ export function AuthScreen() {
           <ShieldCheck size={14} />
           <span>
             {firebaseMode
-              ? 'Firebase 7/24 Serverless • Ücretsiz Spark Plan • Max 5 Kişi'
-              : 'Ücretsiz • WebRTC P2P Mesh • Maksimum 5 Kişi'}
+              ? 'Firebase 7/24 Serverless • Linkle Davet • Oda Başı 10 Kişi'
+              : 'Ücretsiz • WebRTC P2P Mesh • Maksimum 10 Kişi'}
           </span>
         </div>
       </div>

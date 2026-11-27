@@ -5,6 +5,7 @@ import {
   Hash,
   HeadphoneOff,
   Headphones,
+  Link2,
   LogOut,
   MessageSquare,
   Mic,
@@ -18,16 +19,17 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
+import { MAX_ROOM_MEMBERS } from '../lib/firebaseBackend';
+import { currentInviteLink } from '../lib/invite';
 import { useAppStore } from '../store/useAppStore';
-import type { UserStatus } from '../types/protocol';
+import type { SettingsTabId, UserStatus } from '../types/protocol';
 import { ConfirmButton } from './ConfirmButton';
 
 interface SidebarProps {
   mobileOpen: boolean;
   onCloseMobile: () => void;
-  onOpenSettings: () => void;
-  onOpenAdmin: () => void;
-  onOpenProfile: () => void;
+  onOpenSettings: (tab?: SettingsTabId) => void;
+  onOpenRoomHub: (tab: 'join' | 'create') => void;
 }
 
 const STATUS_DOT: Record<UserStatus, string> = {
@@ -41,12 +43,14 @@ export function Sidebar({
   mobileOpen,
   onCloseMobile,
   onOpenSettings,
-  onOpenAdmin,
-  onOpenProfile,
+  onOpenRoomHub,
 }: SidebarProps) {
   const {
     firebaseMode,
     serverName,
+    adminInviteCode,
+    rooms,
+    activeRoomId,
     user,
     wsStatus,
     channels,
@@ -63,6 +67,7 @@ export function Sidebar({
     speaking,
     audioSettings,
     pttActive,
+    selectRoom,
     selectTextChannel,
     openDm,
     joinVoice,
@@ -79,6 +84,7 @@ export function Sidebar({
   const [newChannelName, setNewChannelName] = useState('');
   const [editingChannelId, setEditingChannelId] = useState<string | null>(null);
   const [editingChannelName, setEditingChannelName] = useState('');
+  const [copiedQuickInvite, setCopiedQuickInvite] = useState(false);
 
   const textChannels = channels.filter((c) => c.kind === 'text');
   const voiceChannels = channels.filter((c) => c.kind === 'voice');
@@ -119,33 +125,98 @@ export function Sidebar({
   };
 
   const dmPeers = allUsers.filter((m) => m.id !== user?.id);
+  const quickInviteUrl = currentInviteLink(adminInviteCode);
 
   return (
     <>
       {mobileOpen && <div className="sidebar-backdrop" onClick={onCloseMobile} />}
-      <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
+      <aside className={`sidebar ${firebaseMode ? 'with-rail' : ''} ${mobileOpen ? 'open' : ''}`}>
+        {firebaseMode && (
+          <div className="server-rail" aria-label="Odalarım / Sunucularım">
+            {rooms.map((room) => {
+              const active = room.id === activeRoomId;
+              const initials = room.name
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((w) => w[0]?.toUpperCase() || '')
+                .join('') || 'S';
+              return (
+                <button
+                  key={room.id}
+                  type="button"
+                  className={`server-rail-btn ${active ? 'active' : ''}`}
+                  style={{ backgroundColor: room.icon_color || '#5865F2' }}
+                  title={`${room.name}${room.role === 'admin' ? ' (Admin)' : ''}`}
+                  onClick={() => {
+                    selectRoom(room.id);
+                  }}
+                >
+                  <span>{initials}</span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              className="server-rail-btn server-rail-add"
+              title="Yeni oda oluştur veya davet linkiyle katıl"
+              aria-label="Oda ekle veya katıl"
+              onClick={() => {
+                onOpenRoomHub('join');
+                onCloseMobile();
+              }}
+            >
+              <Plus size={19} />
+            </button>
+          </div>
+        )}
+
+        <div className="sidebar-main">
         <div className="sidebar-header">
-          <div>
-            <h2>{serverName}</h2>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {activeRoomId || !firebaseMode ? serverName : 'SquadVoice'}
+            </h2>
             <div className="connection-pill">
               <span className={`dot ${wsStatus}`} />
               <span>
-                {wsStatus === 'connected'
-                  ? `${onlineUsers.length}/5 Çevrimiçi`
-                  : wsStatus === 'connecting'
-                    ? 'Bağlanıyor...'
-                    : 'Bağlantı Koptu'}
+                {firebaseMode && !activeRoomId
+                  ? 'Oda seç veya katıl'
+                  : wsStatus === 'connected'
+                    ? `${onlineUsers.length}/${MAX_ROOM_MEMBERS} Çevrimiçi`
+                    : wsStatus === 'connecting'
+                      ? 'Bağlanıyor...'
+                      : 'Bağlantı Koptu'}
               </span>
             </div>
           </div>
           <div className="row-gap">
-            {firebaseMode && user?.role === 'admin' && (
+            {firebaseMode && activeRoomId && adminInviteCode && (
               <button
                 type="button"
                 className="icon-btn"
-                title="Admin Yönetim Paneli"
+                title={copiedQuickInvite ? 'Davet linki kopyalandı!' : 'Davet linkini kopyala'}
                 onClick={() => {
-                  onOpenAdmin();
+                  const text = quickInviteUrl ?? adminInviteCode;
+                  navigator.clipboard?.writeText(text).catch(() => {});
+                  setCopiedQuickInvite(true);
+                  setTimeout(() => setCopiedQuickInvite(false), 1600);
+                }}
+              >
+                {copiedQuickInvite ? (
+                  <Check size={16} style={{ color: '#23a55a' }} />
+                ) : (
+                  <Link2 size={16} />
+                )}
+              </button>
+            )}
+            {firebaseMode && activeRoomId && user?.role === 'admin' && (
+              <button
+                type="button"
+                className="icon-btn"
+                title="Admin Paneli (Ayarlar → Yönetim)"
+                onClick={() => {
+                  onOpenSettings('admin');
                   onCloseMobile();
                 }}
               >
@@ -449,7 +520,7 @@ export function Sidebar({
             className="user-info-btn"
             onClick={() => {
               if (firebaseMode) {
-                onOpenProfile();
+                onOpenSettings('profile');
                 onCloseMobile();
               }
             }}
@@ -515,8 +586,8 @@ export function Sidebar({
             <button
               type="button"
               className="icon-btn"
-              title="Ses & Bağlantı Ayarları"
-              onClick={onOpenSettings}
+              title="Ayarlar"
+              onClick={() => onOpenSettings('audio')}
             >
               <Settings size={17} />
             </button>
@@ -529,6 +600,7 @@ export function Sidebar({
               <LogOut size={17} />
             </button>
           </div>
+        </div>
         </div>
       </aside>
     </>

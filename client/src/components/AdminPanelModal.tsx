@@ -169,7 +169,7 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
             className={tab === 'members' ? 'active' : ''}
             onClick={() => setTab('members')}
           >
-            Üyeler ({allUsers.length}/5)
+            Üyeler ({allUsers.length}/10)
           </button>
           <button
             type="button"
@@ -295,7 +295,7 @@ export function AdminPanelModal({ open, onClose }: AdminPanelModalProps) {
             <div className="muted-text" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <Users size={14} />
               <span>
-                Üye atıldığında 5 kişilik slotu boşalır ve yeni arkadaş davet koduyla katılabilir.
+                Üye atıldığında 10 kişilik slotu boşalır ve yeni arkadaş davet koduyla katılabilir.
               </span>
             </div>
 

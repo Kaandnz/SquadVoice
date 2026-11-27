@@ -1,8 +1,6 @@
 /// <reference types="vite/client" />
-import type {
-  GtcrnWorkletNode,
-  RnnoiseWorkletNode,
-} from '@sapphi-red/web-noise-suppressor';
+import deepFilterWasmUrl from '@lofcz/deepfilternet-web/df_bg.wasm?url';
+import deepFilterWorkletUrl from '@lofcz/deepfilternet-web/worklet?url';
 import gtcrnWasmUrl from '@sapphi-red/web-noise-suppressor/gtcrn.wasm?url';
 import gtcrnWorkletUrl from '@sapphi-red/web-noise-suppressor/gtcrnWorklet.js?url';
 import rnnoiseWasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
@@ -13,13 +11,33 @@ import {
   type AiNoiseSuppressionMode,
 } from './noiseSuppression';
 
-export type AiNoiseWorkletNode = RnnoiseWorkletNode | GtcrnWorkletNode;
+export interface AiNoiseWorkletNode extends AudioWorkletNode {
+  destroy(): void;
+}
 
 type SuppressorModule = typeof import('@sapphi-red/web-noise-suppressor');
 
 let suppressorModulePromise: Promise<SuppressorModule> | null = null;
-const wasmBinaryCache = new Map<AiNoiseSuppressionMode, Promise<ArrayBuffer>>();
+const wasmBinaryCache = new Map<'rnnoise' | 'gtcrn', Promise<ArrayBuffer>>();
+let deepFilterModulePromise: Promise<WebAssembly.Module> | null = null;
 const loadedModulesByContext = new WeakMap<AudioContext, Set<AiNoiseSuppressionMode>>();
+
+/** Lightweight feature check for WebAssembly SIMD (required by DeepFilterNet 3). */
+function supportsWasmSimd(): boolean {
+  if (typeof WebAssembly === 'undefined' || typeof WebAssembly.validate !== 'function') {
+    return false;
+  }
+  try {
+    return WebAssembly.validate(
+      new Uint8Array([
+        0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0,
+        253, 15, 253, 98, 11,
+      ]),
+    );
+  } catch {
+    return false;
+  }
+}
 
 function loadSuppressorModule(): Promise<SuppressorModule> {
   if (!suppressorModulePromise) {
@@ -33,7 +51,7 @@ function loadSuppressorModule(): Promise<SuppressorModule> {
 
 function loadWasmBinary(
   mod: SuppressorModule,
-  mode: AiNoiseSuppressionMode,
+  mode: 'rnnoise' | 'gtcrn',
 ): Promise<ArrayBuffer> {
   const cached = wasmBinaryCache.get(mode);
   if (cached) return cached;
@@ -51,6 +69,26 @@ function loadWasmBinary(
   return tracked;
 }
 
+function loadDeepFilterWasmModule(): Promise<WebAssembly.Module> {
+  if (!deepFilterModulePromise) {
+    deepFilterModulePromise = (async () => {
+      if (!supportsWasmSimd()) {
+        throw new Error('Bu cihaz WASM SIMD desteklemiyor (GTCRN veya RNNoise kullanabilirsin).');
+      }
+      const res = await fetch(deepFilterWasmUrl);
+      if (!res.ok) {
+        throw new Error(`DeepFilterNet 3 modeli indirilemedi (${res.status}).`);
+      }
+      const bytes = await res.arrayBuffer();
+      return WebAssembly.compile(bytes);
+    })().catch((err) => {
+      deepFilterModulePromise = null;
+      throw err;
+    });
+  }
+  return deepFilterModulePromise;
+}
+
 async function ensureWorkletModule(ctx: AudioContext, mode: AiNoiseSuppressionMode): Promise<void> {
   let loaded = loadedModulesByContext.get(ctx);
   if (!loaded) {
@@ -59,7 +97,13 @@ async function ensureWorkletModule(ctx: AudioContext, mode: AiNoiseSuppressionMo
   }
   if (loaded.has(mode)) return;
 
-  const url = mode === 'rnnoise' ? rnnoiseWorkletUrl : gtcrnWorkletUrl;
+  const url =
+    mode === 'deepfilternet'
+      ? deepFilterWorkletUrl
+      : mode === 'rnnoise'
+        ? rnnoiseWorkletUrl
+        : gtcrnWorkletUrl;
+
   await ctx.audioWorklet.addModule(url);
   loaded.add(mode);
 }
@@ -77,6 +121,32 @@ export async function createAiNoiseWorkletNode(
     throw new Error(
       `${mode.toUpperCase()} için 48 kHz ses örneklemesi gerekiyor (mevcut: ${ctx.sampleRate} Hz).`,
     );
+  }
+
+  if (mode === 'deepfilternet') {
+    const [wasmModule] = await Promise.all([
+      loadDeepFilterWasmModule(),
+      ensureWorkletModule(ctx, 'deepfilternet'),
+    ]);
+
+    const node = new AudioWorkletNode(ctx, 'deepfilternet-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      channelCount: 1,
+      processorOptions: {
+        wasmModule,
+        attenuationLimit: 100,
+      },
+    }) as AiNoiseWorkletNode;
+
+    node.destroy = () => {
+      try {
+        node.port.postMessage({ type: 'setEnabled', value: false });
+      } catch {
+        // Ignore port errors on closed worklet
+      }
+    };
+    return node;
   }
 
   const mod = await loadSuppressorModule();

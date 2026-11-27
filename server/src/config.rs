@@ -29,7 +29,7 @@ impl Config {
         let uploads_dir = data_dir.join("uploads");
         let static_dir = PathBuf::from(env_or("STATIC_DIR", "../client/dist"));
         let invite_code = env_or("INVITE_CODE", "SQUAD-2026");
-        let max_users = env_or("MAX_USERS", "5").parse::<usize>().unwrap_or(5).max(1);
+        let max_users = env_or("MAX_USERS", "10").parse::<usize>().unwrap_or(10).max(1);
 
         fs::create_dir_all(&data_dir)?;
         fs::create_dir_all(&uploads_dir)?;

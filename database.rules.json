@@ -22,14 +22,30 @@
     "slots": {
       ".read": "auth != null",
       "$slot": {
-        ".write": "auth != null && ($slot == '1' || $slot == '2' || $slot == '3' || $slot == '4' || $slot == '5') && ((!data.exists() && newData.val() == auth.uid) || (data.val() == auth.uid && !newData.exists() && !root.child('users').child(auth.uid).exists()) || (root.child('users').child(auth.uid).child('role').val() == 'admin' && !newData.exists()))"
+        ".write": "auth != null && ($slot == '1' || $slot == '2' || $slot == '3' || $slot == '4' || $slot == '5' || $slot == '6' || $slot == '7' || $slot == '8' || $slot == '9' || $slot == '10') && ((!data.exists() && newData.val() == auth.uid) || (data.val() == auth.uid && !newData.exists()) || (root.child('users').child(auth.uid).child('role').val() == 'admin' && !newData.exists()))"
       }
     },
     "users": {
       ".read": "auth != null && root.child('users').child(auth.uid).exists()",
       "$uid": {
-        ".write": "auth != null && (($uid == auth.uid && !data.exists() && newData.exists()) || ($uid == auth.uid && data.exists() && newData.exists()) || (root.child('users').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid))",
-        ".validate": "!newData.exists() || (newData.hasChildren(['id', 'username', 'display_name', 'avatar_color', 'role', 'slot', 'created_at']) && newData.child('id').val() == $uid && newData.child('slot').isString() && newData.child('display_name').isString() && newData.child('display_name').val().length >= 1 && newData.child('display_name').val().length <= 32 && (newData.child('role').val() == 'admin' || newData.child('role').val() == 'member') && (!newData.child('avatar_url').exists() || (newData.child('avatar_url').isString() && newData.child('avatar_url').val().length <= 65000)) && (!newData.child('custom_status').exists() || (newData.child('custom_status').isString() && newData.child('custom_status').val().length <= 60)) && (!newData.child('status').exists() || (newData.child('status').val() == 'online' || newData.child('status').val() == 'idle' || newData.child('status').val() == 'dnd' || newData.child('status').val() == 'invisible')) && ((data.exists() && $uid == auth.uid && newData.child('role').val() == data.child('role').val() && newData.child('username').val() == data.child('username').val() && newData.child('slot').val() == data.child('slot').val() && newData.child('created_at').val() == data.child('created_at').val()) || (data.exists() && root.child('users').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid) || (!data.exists() && root.child('slots').child(newData.child('slot').val()).val() == auth.uid && ((!root.child('users').exists() && newData.child('role').val() == 'admin') || (root.child('users').exists() && newData.child('role').val() == 'member' && newData.child('invite_code').val() == root.child('config/inviteCode').val())))))"
+        ".write": "auth != null && ($uid == auth.uid || (root.child('users').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid))",
+        ".validate": "!newData.exists() || (newData.hasChildren(['id', 'username', 'display_name', 'avatar_color', 'role', 'created_at']) && newData.child('id').val() == $uid && newData.child('display_name').isString() && newData.child('display_name').val().length >= 1 && newData.child('display_name').val().length <= 32 && (newData.child('role').val() == 'admin' || newData.child('role').val() == 'member') && (!newData.child('slot').exists() || newData.child('slot').isString()) && (!newData.child('avatar_url').exists() || (newData.child('avatar_url').isString() && newData.child('avatar_url').val().length <= 65000)) && (!newData.child('custom_status').exists() || (newData.child('custom_status').isString() && newData.child('custom_status').val().length <= 60)) && (!newData.child('status').exists() || (newData.child('status').val() == 'online' || newData.child('status').val() == 'idle' || newData.child('status').val() == 'dnd' || newData.child('status').val() == 'invisible')) && ((data.exists() && $uid == auth.uid && newData.child('role').val() == data.child('role').val() && newData.child('username').val() == data.child('username').val() && newData.child('created_at').val() == data.child('created_at').val()) || (data.exists() && root.child('users').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid) || (!data.exists() && ((!root.child('users').exists() && newData.child('role').val() == 'admin') || newData.child('role').val() == 'member'))))"
+      }
+    },
+    "invites": {
+      ".read": false,
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.child('created_by').val() == auth.uid) || (data.exists() && (data.child('created_by').val() == auth.uid || (data.child('roomId').val() == 'default' && root.child('users').child(auth.uid).child('role').val() == 'admin') || root.child('rooms').child(data.child('roomId').val()).child('members').child(auth.uid).child('role').val() == 'admin')))",
+        ".validate": "!newData.exists() || (newData.hasChildren(['roomId', 'created_by']) && newData.child('roomId').isString() && newData.child('created_by').isString())"
+      }
+    },
+    "userRooms": {
+      "$uid": {
+        ".read": "auth != null && $uid == auth.uid",
+        "$roomId": {
+          ".write": "auth != null && ($uid == auth.uid || ($roomId == 'default' && root.child('users').child(auth.uid).child('role').val() == 'admin') || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')"
+        }
       }
     },
     "channels": {
@@ -60,6 +76,15 @@
         }
       }
     },
+    "readReceipts": {
+      "$channelId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).exists()",
+        "$uid": {
+          ".write": "auth != null && $uid == auth.uid && root.child('users').child(auth.uid).exists()",
+          ".validate": "!newData.exists() || (newData.hasChildren(['user_id', 'display_name', 'last_read_at', 'last_read_msg_id', 'updated_at']) && newData.child('user_id').val() == auth.uid)"
+        }
+      }
+    },
     "dms": {
       "$pairId": {
         ".read": "auth != null && root.child('users').child(auth.uid).exists() && ($pairId.beginsWith(auth.uid + '__') || $pairId.endsWith('__' + auth.uid))",
@@ -77,6 +102,15 @@
         }
       }
     },
+    "dmReadReceipts": {
+      "$pairId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).exists() && ($pairId.beginsWith(auth.uid + '__') || $pairId.endsWith('__' + auth.uid))",
+        "$uid": {
+          ".write": "auth != null && $uid == auth.uid && root.child('users').child(auth.uid).exists() && ($pairId.beginsWith(auth.uid + '__') || $pairId.endsWith('__' + auth.uid))",
+          ".validate": "!newData.exists() || (newData.hasChildren(['user_id', 'display_name', 'last_read_at', 'last_read_msg_id', 'updated_at']) && newData.child('user_id').val() == auth.uid)"
+        }
+      }
+    },
     "typing": {
       "$channelId": {
         ".read": "auth != null && root.child('users').child(auth.uid).exists()",
@@ -89,6 +123,13 @@
       "$channelId": {
         ".read": "auth != null && root.child('users').child(auth.uid).exists()",
         ".write": "auth != null && root.child('users').child(auth.uid).exists() && root.child('voice').child(auth.uid).child('channel_id').val() == $channelId"
+      }
+    },
+    "customSounds": {
+      ".read": "auth != null && root.child('users').child(auth.uid).exists()",
+      "$soundId": {
+        ".write": "auth != null && root.child('users').child(auth.uid).exists() && ((!data.exists() && newData.child('created_by').val() == auth.uid) || (data.exists() && !newData.exists() && (data.child('created_by').val() == auth.uid || root.child('users').child(auth.uid).child('role').val() == 'admin')))",
+        ".validate": "!newData.exists() || (newData.hasChildren(['id', 'label', 'emoji', 'audio_url', 'created_by', 'created_by_name', 'created_at']) && newData.child('label').isString() && newData.child('label').val().length >= 1 && newData.child('label').val().length <= 32 && newData.child('emoji').isString() && newData.child('emoji').val().length >= 1 && newData.child('emoji').val().length <= 8 && newData.child('audio_url').isString() && newData.child('audio_url').val().length <= 260000)"
       }
     },
     "presence": {
@@ -116,6 +157,119 @@
         ".write": "auth != null && $targetUid == auth.uid && !newData.exists()",
         "$signalId": {
           ".write": "auth != null && (($targetUid == auth.uid && !newData.exists()) || (root.child('users').child(auth.uid).exists() && newData.exists() && newData.child('from_user_id').val() == auth.uid && root.child('voice').child(auth.uid).child('channel_id').exists() && root.child('voice').child(auth.uid).child('channel_id').val() == root.child('voice').child($targetUid).child('channel_id').val()))"
+        }
+      }
+    },
+    "rooms": {
+      "$roomId": {
+        "meta": {
+          ".read": "auth != null && (root.child('rooms').child($roomId).child('members').child(auth.uid).exists() || data.child('owner_id').val() == auth.uid)",
+          ".write": "auth != null && ((!data.exists() && newData.child('owner_id').val() == auth.uid) || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')",
+          ".validate": "!newData.exists() || (newData.hasChildren(['id', 'name', 'icon_color', 'owner_id', 'invite_code', 'created_at']) && newData.child('id').val() == $roomId && newData.child('name').isString() && newData.child('name').val().length >= 1 && newData.child('name').val().length <= 32 && newData.child('invite_code').isString() && newData.child('invite_code').val().length >= 3 && newData.child('invite_code').val().length <= 40)"
+        },
+        "turn": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin'",
+          ".validate": "!newData.exists() || ((newData.child('workerUrl').isString() && newData.child('workerUrl').val().length <= 300) || (newData.child('url').isString() && newData.child('url').val().length <= 300))"
+        },
+        "slots": {
+          ".read": "auth != null",
+          "$slot": {
+            ".write": "auth != null && ($slot == '1' || $slot == '2' || $slot == '3' || $slot == '4' || $slot == '5' || $slot == '6' || $slot == '7' || $slot == '8' || $slot == '9' || $slot == '10') && ((!data.exists() && newData.val() == auth.uid) || (data.val() == auth.uid && !newData.exists()) || (root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' && !newData.exists()))"
+          }
+        },
+        "members": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          "$uid": {
+            ".write": "auth != null && ($uid == auth.uid || (root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id', 'username', 'display_name', 'avatar_color', 'role', 'slot', 'created_at']) && newData.child('id').val() == $uid && newData.child('slot').isString() && (newData.child('role').val() == 'admin' || newData.child('role').val() == 'member') && ((data.exists() && $uid == auth.uid && newData.child('role').val() == data.child('role').val() && newData.child('slot').val() == data.child('slot').val()) || (data.exists() && root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' && $uid != auth.uid) || (!data.exists() && root.child('rooms').child($roomId).child('slots').child(newData.child('slot').val()).val() == auth.uid && ((root.child('rooms').child($roomId).child('meta/owner_id').val() == auth.uid && newData.child('role').val() == 'admin') || (newData.child('role').val() == 'member' && newData.child('invite_code').val() == root.child('rooms').child($roomId).child('meta/invite_code').val())))))"
+          }
+        },
+        "channels": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          "$channelId": {
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && (newData.exists() || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id', 'name', 'kind', 'position', 'created_at']) && (newData.child('kind').val() == 'text' || newData.child('kind').val() == 'voice') && newData.child('name').isString() && newData.child('name').val().length >= 1 && newData.child('name').val().length <= 32)"
+          }
+        },
+        "messages": {
+          "$channelId": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' && !newData.exists()",
+            ".indexOn": ["created_at"],
+            "$messageId": {
+              ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && ((!data.exists() && newData.exists() && newData.child('user_id').val() == auth.uid && root.child('rooms').child($roomId).child('channels').child($channelId).exists()) || (data.exists() && newData.exists() && data.child('user_id').val() == auth.uid && newData.child('user_id').val() == auth.uid && newData.child('created_at').val() == data.child('created_at').val()) || (data.exists() && !newData.exists() && (data.child('user_id').val() == auth.uid || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')))",
+              ".validate": "!newData.exists() || (newData.hasChildren(['id', 'channel_id', 'user_id', 'username', 'display_name', 'avatar_color', 'content', 'created_at']) && newData.child('content').isString() && newData.child('content').val().length <= 4000 && (!newData.child('attachment_url').exists() || (newData.child('attachment_url').isString() && newData.child('attachment_url').val().length <= 350000)))",
+              "reactions": {
+                "$emoji": {
+                  "$uid": {
+                    ".write": "auth != null && $uid == auth.uid && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()"
+                  }
+                }
+              },
+              "pinned": {
+                ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()"
+              }
+            }
+          }
+        },
+        "readReceipts": {
+          "$channelId": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+            "$uid": {
+              ".write": "auth != null && $uid == auth.uid && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+              ".validate": "!newData.exists() || (newData.hasChildren(['user_id', 'display_name', 'last_read_at', 'last_read_msg_id', 'updated_at']) && newData.child('user_id').val() == auth.uid)"
+            }
+          }
+        },
+        "typing": {
+          "$channelId": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+            "$uid": {
+              ".write": "auth != null && $uid == auth.uid && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()"
+            }
+          }
+        },
+        "soundboard": {
+          "$channelId": {
+            ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && root.child('rooms').child($roomId).child('voice').child(auth.uid).child('channel_id').val() == $channelId"
+          }
+        },
+        "customSounds": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          "$soundId": {
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && ((!data.exists() && newData.child('created_by').val() == auth.uid) || (data.exists() && !newData.exists() && (data.child('created_by').val() == auth.uid || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['id', 'label', 'emoji', 'audio_url', 'created_by', 'created_by_name', 'created_at']) && newData.child('label').isString() && newData.child('label').val().length >= 1 && newData.child('label').val().length <= 32 && newData.child('emoji').isString() && newData.child('emoji').val().length >= 1 && newData.child('emoji').val().length <= 8 && newData.child('audio_url').isString() && newData.child('audio_url').val().length <= 260000)"
+          }
+        },
+        "presence": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          "$uid": {
+            ".write": "auth != null && ($uid == auth.uid || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin') && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()"
+          }
+        },
+        "voice": {
+          ".read": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists()",
+          "$uid": {
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && ($uid == auth.uid || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin')",
+            ".validate": "!newData.exists() || root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' || data.child('force_muted').val() != true || (newData.child('force_muted').val() == true && newData.child('muted').val() == true)"
+          }
+        },
+        "voice_kicks": {
+          "$uid": {
+            ".read": "auth != null && $uid == auth.uid",
+            ".write": "auth != null && root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && ((root.child('rooms').child($roomId).child('members').child(auth.uid).child('role').val() == 'admin' && newData.isNumber()) || ($uid == auth.uid && !newData.exists()))"
+          }
+        },
+        "signals": {
+          "$targetUid": {
+            ".read": "auth != null && $targetUid == auth.uid",
+            ".write": "auth != null && $targetUid == auth.uid && !newData.exists()",
+            "$signalId": {
+              ".write": "auth != null && (($targetUid == auth.uid && !newData.exists()) || (root.child('rooms').child($roomId).child('members').child(auth.uid).exists() && newData.exists() && newData.child('from_user_id').val() == auth.uid && root.child('rooms').child($roomId).child('voice').child(auth.uid).child('channel_id').exists() && root.child('rooms').child($roomId).child('voice').child(auth.uid).child('channel_id').val() == root.child('rooms').child($roomId).child('voice').child($targetUid).child('channel_id').val()))"
+            }
+          }
         }
       }
     }

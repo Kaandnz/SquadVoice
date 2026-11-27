@@ -32,6 +32,7 @@ const settings: AudioSettings = {
   pttEnabled: false,
   pttKey: 'Backquote',
   soundsEnabled: false,
+  soundboardVolume: 0.85,
   desktopNotifications: false,
 };
 

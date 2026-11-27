@@ -23,18 +23,29 @@ import {
   MonitorOff,
   Music2,
   PhoneOff,
+  Play,
+  Plus,
   RefreshCw,
+  Square,
+  Trash2,
+  Upload,
   UserX,
   Video,
   VideoOff,
   Volume2,
   VolumeX,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { canUseDisplayMedia } from '../lib/platform';
 import { ConnectionDetails } from './ConnectionDetails';
-import { SOUNDBOARD_ITEMS } from '../lib/sounds';
+import {
+  playSoundboard,
+  readCustomAudioFile,
+  SOUNDBOARD_ITEMS,
+  stopAllSoundboard,
+} from '../lib/sounds';
 import {
   clampPan,
   clampZoom,
@@ -117,7 +128,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     focusedStreamUserId,
     turnEnabled,
     wsStatus,
+    audioSettings,
     lastSoundboard,
+    customSounds,
     selectTextChannel,
     toggleMute,
     toggleDeafen,
@@ -127,6 +140,9 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
     leaveVoice,
     reconnectVoicePeers,
     playRoomSoundboard,
+    addCustomSound,
+    deleteCustomSound,
+    updateAudioSettings,
     setFocusedStreamUser,
     setScreenAudioConfig,
     setPeerVolume,
@@ -140,6 +156,15 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   const [streamMuted, setStreamMuted] = useState(false);
   const [showSelfPreview, setShowSelfPreview] = useState(false);
   const [soundboardOpen, setSoundboardOpen] = useState(false);
+  const [soundTab, setSoundTab] = useState<'all' | 'meme' | 'tepki' | 'efekt' | 'custom'>('all');
+  const [addingSound, setAddingSound] = useState(false);
+  const [newSoundLabel, setNewSoundLabel] = useState('');
+  const [newSoundEmoji, setNewSoundEmoji] = useState('🔊');
+  const [newSoundDataUrl, setNewSoundDataUrl] = useState<string | null>(null);
+  const [newSoundFileName, setNewSoundFileName] = useState<string>('');
+  const [soundUploadErr, setSoundUploadErr] = useState<string | null>(null);
+  const [soundUploadBusy, setSoundUploadBusy] = useState(false);
+  const soundFileRef = useRef<HTMLInputElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [zoom, setZoom] = useState(MIN_ZOOM);
@@ -486,8 +511,25 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
   };
 
   const soundMeta = lastSoundboard
-    ? SOUNDBOARD_ITEMS.find((i) => i.id === lastSoundboard.sound)
+    ? (() => {
+        const builtin = SOUNDBOARD_ITEMS.find((i) => i.id === lastSoundboard.sound);
+        if (builtin) return { emoji: builtin.emoji, label: builtin.label };
+        const custom = customSounds.find((i) => i.id === lastSoundboard.sound);
+        if (custom) return { emoji: custom.emoji, label: custom.label };
+        if (lastSoundboard.label) {
+          return { emoji: lastSoundboard.emoji || '🔊', label: lastSoundboard.label };
+        }
+        return null;
+      })()
     : null;
+  const sbVolume = audioSettings.soundboardVolume ?? 0.85;
+  const filteredBuiltins =
+    soundTab === 'all'
+      ? SOUNDBOARD_ITEMS
+      : soundTab === 'custom'
+        ? []
+        : SOUNDBOARD_ITEMS.filter((i) => i.category === soundTab);
+  const showCustomSounds = soundTab === 'all' || soundTab === 'custom';
   const isVoiceChatOpen = !activeDmUserId && activeTextChannelId === activeVoiceChannelId;
   const roomUnread = unreadByChannel[activeVoiceChannelId] || 0;
   const displayMediaAvailable = canUseDisplayMedia();
@@ -719,26 +761,258 @@ export function VoiceStage({ onOpenShareModal }: VoiceStageProps) {
         </div>
 
         {soundboardOpen && (
-          <div className="soundboard-popover" onClick={(e) => e.stopPropagation()}>
-            <div className="field-label" style={{ marginBottom: 6 }}>
-              Oda Soundboard
-            </div>
-            <div className="soundboard-grid">
-              {SOUNDBOARD_ITEMS.map((item) => (
+          <div className="soundboard-popover wide" onClick={(e) => e.stopPropagation()}>
+            <div className="row-between" style={{ marginBottom: 8 }}>
+              <div className="field-label" style={{ margin: 0 }}>
+                Ses Tahtası (Soundboard)
+              </div>
+              <div className="row-gap">
                 <button
-                  key={item.id}
                   type="button"
-                  className="soundboard-btn"
+                  className="icon-btn tiny"
+                  title="Çalan sesleri durdur"
+                  onClick={stopAllSoundboard}
+                >
+                  <Square size={12} />
+                </button>
+                <button
+                  type="button"
+                  className={`secondary-btn tiny-pill ${addingSound ? 'active' : ''}`}
                   onClick={() => {
-                    playRoomSoundboard(item.id);
-                    setSoundboardOpen(false);
+                    setAddingSound((v) => !v);
+                    setSoundUploadErr(null);
                   }}
                 >
-                  <span>{item.emoji}</span>
-                  <span>{item.label}</span>
+                  <Plus size={12} /> Ses Ekle
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn tiny"
+                  onClick={() => setSoundboardOpen(false)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+
+            <div className="soundboard-volume-row">
+              <Volume2 size={13} />
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(sbVolume * 100)}
+                onChange={(e) =>
+                  updateAudioSettings({ soundboardVolume: Number(e.target.value) / 100 })
+                }
+                aria-label="Soundboard ses seviyesi"
+              />
+              <span className="muted-text">{Math.round(sbVolume * 100)}%</span>
+            </div>
+
+            {addingSound && (
+              <div className="soundboard-upload-box">
+                <input
+                  ref={soundFileRef}
+                  type="file"
+                  accept="audio/mpeg,audio/wav,audio/ogg,audio/webm,audio/mp4,.mp3,.wav,.ogg,.webm,.m4a"
+                  hidden
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!f) return;
+                    setSoundUploadErr(null);
+                    try {
+                      const dataUrl = await readCustomAudioFile(f);
+                      setNewSoundDataUrl(dataUrl);
+                      setNewSoundFileName(f.name);
+                      if (!newSoundLabel.trim()) {
+                        setNewSoundLabel(f.name.replace(/\.[^.]+$/, '').slice(0, 28));
+                      }
+                    } catch (err) {
+                      setSoundUploadErr(err instanceof Error ? err.message : 'Dosya okunamadı.');
+                    }
+                  }}
+                />
+                <div className="row-gap">
+                  <input
+                    type="text"
+                    className="dark-input"
+                    value={newSoundEmoji}
+                    onChange={(e) => setNewSoundEmoji(e.target.value)}
+                    style={{ width: 44, textAlign: 'center', padding: '5px 4px' }}
+                    maxLength={4}
+                    aria-label="Emoji"
+                  />
+                  <input
+                    type="text"
+                    className="dark-input"
+                    value={newSoundLabel}
+                    onChange={(e) => setNewSoundLabel(e.target.value)}
+                    placeholder="Ses adı (örn: Bruh)"
+                    maxLength={32}
+                    style={{ flex: 1, padding: '5px 8px' }}
+                  />
+                </div>
+                <div className="row-gap" style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className="secondary-btn small"
+                    style={{ flex: 1 }}
+                    onClick={() => soundFileRef.current?.click()}
+                  >
+                    <Upload size={13} /> {newSoundFileName ? newSoundFileName.slice(0, 18) : 'MP3 / WAV Seç (≤185 KB)'}
+                  </button>
+                  {newSoundDataUrl && (
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Önizle (sadece sana çalar)"
+                      onClick={() =>
+                        playSoundboard('custom', {
+                          volume: sbVolume,
+                          customAudioUrl: newSoundDataUrl,
+                        })
+                      }
+                    >
+                      <Play size={14} />
+                    </button>
+                  )}
+                </div>
+                {soundUploadErr && <div className="form-error" style={{ marginTop: 6 }}>{soundUploadErr}</div>}
+                <div className="row-gap" style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className="primary-btn small"
+                    style={{ flex: 1 }}
+                    disabled={!newSoundDataUrl || !newSoundLabel.trim() || soundUploadBusy}
+                    onClick={async () => {
+                      if (!newSoundDataUrl || !newSoundLabel.trim()) return;
+                      setSoundUploadBusy(true);
+                      setSoundUploadErr(null);
+                      try {
+                        await addCustomSound({
+                          label: newSoundLabel.trim(),
+                          emoji: newSoundEmoji.trim() || '🔊',
+                          audio_url: newSoundDataUrl,
+                        });
+                        setNewSoundLabel('');
+                        setNewSoundDataUrl(null);
+                        setNewSoundFileName('');
+                        setAddingSound(false);
+                        setSoundTab('custom');
+                      } catch (err) {
+                        setSoundUploadErr(err instanceof Error ? err.message : 'Ses eklenemedi.');
+                      } finally {
+                        setSoundUploadBusy(false);
+                      }
+                    }}
+                  >
+                    {soundUploadBusy ? 'Kaydediliyor...' : 'Odaya Ekle'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="soundboard-tabs">
+              {(
+                [
+                  { id: 'all', label: 'Tümü' },
+                  { id: 'meme', label: 'Meme' },
+                  { id: 'tepki', label: 'Tepki' },
+                  { id: 'efekt', label: 'Efekt' },
+                  { id: 'custom', label: `Özel (${customSounds.length})` },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={soundTab === t.id ? 'active' : ''}
+                  onClick={() => setSoundTab(t.id)}
+                >
+                  {t.label}
                 </button>
               ))}
             </div>
+
+            <div className="soundboard-grid">
+              {filteredBuiltins.map((item) => (
+                <div key={item.id} className="soundboard-item-wrap">
+                  <button
+                    type="button"
+                    className="soundboard-btn"
+                    title="Odadaki herkese çal"
+                    onClick={() => {
+                      playRoomSoundboard(item.id, { emoji: item.emoji, label: item.label });
+                    }}
+                  >
+                    <span>{item.emoji}</span>
+                    <span className="sb-label">{item.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="sb-preview-btn"
+                    title="Sadece kendin dinle (önizleme)"
+                    onClick={() => playSoundboard(item.id, { volume: sbVolume })}
+                  >
+                    <Play size={11} />
+                  </button>
+                </div>
+              ))}
+
+              {showCustomSounds &&
+                customSounds.map((cs) => {
+                  const canDel = user?.id === cs.created_by || user?.role === 'admin';
+                  return (
+                    <div key={cs.id} className="soundboard-item-wrap custom">
+                      <button
+                        type="button"
+                        className="soundboard-btn"
+                        title={`${cs.created_by_name} ekledi — herkese çal`}
+                        onClick={() => {
+                          playRoomSoundboard(cs.id, {
+                            emoji: cs.emoji,
+                            label: cs.label,
+                            audio_url: cs.audio_url,
+                          });
+                        }}
+                      >
+                        <span>{cs.emoji}</span>
+                        <span className="sb-label">{cs.label}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="sb-preview-btn"
+                        title="Önizle"
+                        onClick={() =>
+                          playSoundboard(cs.id, {
+                            volume: sbVolume,
+                            customAudioUrl: cs.audio_url,
+                          })
+                        }
+                      >
+                        <Play size={11} />
+                      </button>
+                      {canDel && (
+                        <button
+                          type="button"
+                          className="sb-preview-btn danger-hover"
+                          title="Özel sesi sil"
+                          onClick={() => deleteCustomSound(cs.id)}
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+
+            {soundTab === 'custom' && customSounds.length === 0 && (
+              <div className="muted-text" style={{ textAlign: 'center', padding: '10px 4px' }}>
+                Henüz özel ses eklenmedi. Yukarıdaki <strong>+ Ses Ekle</strong> ile kendi MP3/WAV kliplerini yükleyebilirsin!
+              </div>
+            )}
           </div>
         )}
       </div>

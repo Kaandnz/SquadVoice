@@ -26,6 +26,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   window.history.replaceState(null, '', '/');
+  window.sessionStorage.clear();
 });
 
 describe('AuthScreen invite links', () => {
